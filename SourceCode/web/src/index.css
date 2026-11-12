@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-primary: #0056b3;
+    --color-primary-hover: #00458f;
+    --color-primary-soft: #ebf3fa;
+    --color-bg: #f4f6f9;
+    --color-success: #28a745;
+    --color-success-hover: #218838;
+    --color-danger: #dc3545;
+    --color-danger-hover: #c82333;
+    --color-highlight: #fff3cd;
+    --surface: #ffffff;
+    --surface-muted: #f6f8fb;
+    --border: #d8e1ed;
+    --text-primary: #1f3553;
+    --text-muted: #71839e;
+    --sidebar-width: 220px;
+    --header-height: 72px;
+    --radius-control: 6px;
+    --radius-card: 12px;
+    --font-sans: Arial, "Segoe UI", sans-serif;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    background-color: var(--color-bg);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button, a, input, select {
+    touch-action: manipulation;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+    border-radius: var(--radius-control);
+    border-color: var(--border);
+    font-family: inherit;
+  }
+
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+    outline-offset: 2px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead {
+    background-color: var(--surface-muted);
+  }
+
+  th {
+    color: var(--text-primary);
+    font-weight: 600;
+    text-align: left;
+  }
+
+  th, td {
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@layer components {
+  .text-primary {
+    color: var(--color-primary);
+  }
+
+  .bg-primary {
+    background-color: var(--color-primary);
+  }
+
+  .bg-primary-soft {
+    background-color: var(--color-primary-soft);
+  }
+
+  .hover\:bg-primary:hover {
+    background-color: var(--color-primary);
+  }
+
+  .hover\:bg-primary-soft:hover {
+    background-color: var(--color-primary-soft);
+  }
+
+  .active\:bg-primary:active {
+    background-color: var(--color-primary);
+  }
+
+  .active\:bg-primary-soft:active {
+    background-color: var(--color-primary-soft);
+  }
+
+  .hover\:text-primary:hover {
+    color: var(--color-primary);
+  }
+
+  .bg-success {
+    background-color: var(--color-success);
+  }
+
+  .bg-success-hover:hover {
+    background-color: var(--color-success-hover);
+  }
+
+  .bg-danger {
+    background-color: var(--color-danger);
+  }
+
+  .bg-danger-soft {
+    background-color: color-mix(in srgb, var(--color-danger) 8%, white);
+  }
+
+  .text-danger {
+    color: var(--color-danger);
+  }
+
+  .hover\:text-danger:hover {
+    color: var(--color-danger);
+  }
+
+  .border-danger {
+    border-color: var(--color-danger);
+  }
+
+  .bg-highlight {
+    background-color: var(--color-highlight);
+  }
+
+  .border-primary-soft {
+    border-color: color-mix(in srgb, var(--color-primary) 30%, transparent);
+  }
+
+  .ui-button {
+    min-height: 40px;
+    border-radius: var(--radius-control);
+    padding: 0.625rem 1rem;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+  }
+
+  .ui-button-primary {
+    background: var(--color-primary);
+    color: var(--surface);
+  }
+
+  .ui-button-primary:hover {
+    background: var(--color-primary-hover);
+  }
+
+  .ui-button-secondary {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--color-primary);
+  }
+
+  .ui-input {
+    min-height: 42px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--surface);
+    padding: 0.625rem 0.75rem;
+    color: var(--text-primary);
+    font: inherit;
+  }
+
+  .ui-table th {
+    padding: 0.75rem 1rem;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .ui-table td {
+    padding: 0.75rem 1rem;
+  }
+}
+
+.app-sidebar nav a {
+  border-radius: var(--radius-control);
+}
+
+/* Khổ in hóa đơn 80mm */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-size: 12px !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  #receipt-print-area {
+    width: 78mm;
+    margin: 0 auto;
+    padding: 4mm 2mm;
+    display: block !important;
+  }
+}
+
+.print-only {
+  display: none;
+}

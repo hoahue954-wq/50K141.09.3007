@@ -1,0 +1,460 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleCode {
+  OWNER
+  STAFF
+}
+
+enum ProfileStatus {
+  ACTIVE
+  LOCKED
+}
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  DEBT
+}
+
+enum InvoiceStatus {
+  PAID
+  UNPAID
+}
+
+enum PurchaseOrderStatus {
+  SAVED
+  COMPLETED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReturnType {
+  RETURN
+  EXCHANGE
+}
+
+enum ReturnItemKind {
+  RETURNED
+  EXCHANGED
+}
+
+enum DebtPaymentMethod {
+  CASH
+  TRANSFER
+}
+
+enum InventoryTransactionType {
+  IMPORT
+  SALE
+  RETURN
+  DISPOSAL
+  ADJUSTMENT
+}
+
+enum ExpenseCategory {
+  ELECTRICITY
+  RENT
+  SALARY
+  OTHER
+}
+
+model Role {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      RoleCode  @unique
+  name      String
+  profiles  Profile[]
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("roles")
+}
+
+model Profile {
+  // This UUID is the matching Supabase Auth user ID; Auth remains the identity provider.
+  id                     String                 @id @db.Uuid
+  username               String                 @unique
+  fullName               String                 @map("full_name")
+  phone                  String?
+  status                 ProfileStatus          @default(ACTIVE)
+  roleId                 String                 @map("role_id") @db.Uuid
+  role                   Role                   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  createdAt              DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdInvoices        Invoice[]              @relation("InvoiceCreator")
+  deletedInvoices        Invoice[]              @relation("InvoiceDeleter")
+  createdPurchaseOrders  PurchaseOrder[]        @relation("PurchaseOrderCreator")
+  approvedPurchaseOrders PurchaseOrder[]        @relation("PurchaseOrderApprover")
+  deletedPurchaseOrders  PurchaseOrder[]        @relation("PurchaseOrderDeleter")
+  createdDisposalSlips   DisposalSlip[]         @relation("DisposalCreator")
+  approvedDisposalSlips  DisposalSlip[]         @relation("DisposalApprover")
+  deletedDisposalSlips  DisposalSlip[]         @relation("DisposalDeleter")
+  createdReturnSlips     ReturnSlip[]           @relation("ReturnCreator")
+  approvedReturnSlips    ReturnSlip[]           @relation("ReturnApprover")
+  deletedReturnSlips    ReturnSlip[]           @relation("ReturnDeleter")
+  inventoryTransactions  InventoryTransaction[]
+  debtPayments           DebtPayment[]
+  createdExpenses        Expense[]
+  updatedStoreSettings   StoreSettings[]        @relation("StoreSettingsUpdater")
+  auditLogs              AuditLog[]
+
+  @@index([roleId, status])
+  @@map("profiles")
+}
+
+model Category {
+  id          String    @id @default(uuid()) @db.Uuid
+  code        String    @unique
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  barcode               String                 @unique
+  name                  String                 @unique
+  categoryId            String                 @map("category_id") @db.Uuid
+  category              Category               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  costPrice             Decimal                @default(0) @map("cost_price") @db.Decimal(12, 2)
+  sellingPrice          Decimal                @map("selling_price") @db.Decimal(12, 2)
+  unit                  String
+  stockQuantity         Int                    @default(0) @map("stock_quantity")
+  minStock              Int                    @default(0) @map("min_stock")
+  imageUrl              String?                @map("image_url")
+  isDiscontinued        Boolean                @default(false) @map("is_discontinued")
+  createdAt             DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  invoiceDetails        InvoiceDetail[]
+  purchaseOrderItems    PurchaseOrderItem[]
+  disposalItems         DisposalItem[]
+  returnItems           ReturnItem[]
+  inventoryTransactions InventoryTransaction[]
+
+  @@index([categoryId, isDiscontinued])
+  @@index([name])
+  @@map("products")
+}
+
+model Customer {
+  id           String        @id @default(uuid()) @db.Uuid
+  code         String        @unique
+  name         String
+  phone        String?
+  isRegular    Boolean       @default(false) @map("is_regular")
+  notes        String?
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  invoices     Invoice[]
+  debtRecords  DebtRecord[]
+  debtPayments DebtPayment[]
+
+  @@index([name])
+  @@index([phone])
+  @@map("customers")
+}
+
+model Invoice {
+  id                   String          @id @default(uuid()) @db.Uuid
+  code                 String          @unique
+  createdAt            DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  totalAmount          Decimal         @map("total_amount") @db.Decimal(12, 2)
+  cashGiven            Decimal?        @map("cash_given") @db.Decimal(12, 2)
+  changeGiven          Decimal?        @map("change_given") @db.Decimal(12, 2)
+  paymentMethod        PaymentMethod   @map("payment_method")
+  status               InvoiceStatus   @default(PAID)
+  customerId           String?         @map("customer_id") @db.Uuid
+  customer             Customer?       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdById          String          @map("created_by_id") @db.Uuid
+  createdBy            Profile         @relation("InvoiceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  paidAt               DateTime?       @map("paid_at") @db.Timestamptz(3)
+  paymentMethodSettled PaymentMethod?  @map("payment_method_settled")
+  isDeleted            Boolean         @default(false) @map("is_deleted")
+  deletedById          String?         @map("deleted_by_id") @db.Uuid
+  deletedBy            Profile?        @relation("InvoiceDeleter", fields: [deletedById], references: [id], onDelete: Restrict)
+  deletedAt            DateTime?       @map("deleted_at") @db.Timestamptz(3)
+  details              InvoiceDetail[]
+  debtRecord           DebtRecord?
+  debtPayments         DebtPayment[]
+  returnSlips          ReturnSlip[]
+
+  @@index([createdAt, status])
+  @@index([customerId, status])
+  @@index([isDeleted, createdAt])
+  @@map("invoices")
+}
+
+model InvoiceDetail {
+  id             String       @id @default(uuid()) @db.Uuid
+  invoiceId      String       @map("invoice_id") @db.Uuid
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  productId      String       @map("product_id") @db.Uuid
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productBarcode String       @map("product_barcode")
+  productName    String       @map("product_name")
+  unit           String
+  quantity       Int
+  unitPrice      Decimal      @map("unit_price") @db.Decimal(12, 2)
+  costPrice      Decimal      @map("cost_price") @db.Decimal(12, 2)
+  lineTotal      Decimal      @map("line_total") @db.Decimal(12, 2)
+  returnItems    ReturnItem[] @relation("ReturnedInvoiceDetail")
+
+  @@index([invoiceId])
+  @@index([productId])
+  @@map("invoice_details")
+}
+
+model PurchaseOrder {
+  id           String              @id @default(uuid()) @db.Uuid
+  code         String              @unique
+  status       PurchaseOrderStatus @default(SAVED)
+  orderDate    DateTime            @default(now()) @map("order_date") @db.Timestamptz(3)
+  createdById  String              @map("created_by_id") @db.Uuid
+  createdBy    Profile             @relation("PurchaseOrderCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById String?             @map("approved_by_id") @db.Uuid
+  approvedBy   Profile?            @relation("PurchaseOrderApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  deletedById  String?             @map("deleted_by_id") @db.Uuid
+  deletedBy    Profile?            @relation("PurchaseOrderDeleter", fields: [deletedById], references: [id], onDelete: Restrict)
+  deletedAt    DateTime?           @map("deleted_at") @db.Timestamptz(3)
+  isDeleted    Boolean             @default(false) @map("is_deleted")
+  approvedAt   DateTime?           @map("approved_at") @db.Timestamptz(3)
+  supplierName String?             @map("supplier_name")
+  note         String?
+  totalAmount  Decimal             @default(0) @map("total_amount") @db.Decimal(12, 2)
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  completedAt  DateTime?           @map("completed_at") @db.Timestamptz(3)
+  items        PurchaseOrderItem[]
+
+  @@index([status, orderDate])
+  @@index([createdById, status])
+  @@index([isDeleted, orderDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(uuid()) @db.Uuid
+  purchaseOrderId String        @map("purchase_order_id") @db.Uuid
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       String        @map("product_id") @db.Uuid
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productBarcode  String        @map("product_barcode")
+  productName     String        @map("product_name")
+  quantity        Int
+  importPrice     Decimal       @map("import_price") @db.Decimal(12, 2)
+  lineTotal       Decimal       @map("line_total") @db.Decimal(12, 2)
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@map("purchase_order_items")
+}
+
+model DisposalSlip {
+  id           String         @id @default(uuid()) @db.Uuid
+  code         String         @unique
+  status       ApprovalStatus @default(PENDING)
+  reason       String
+  evidenceUrl  String?        @map("evidence_url")
+  createdById  String         @map("created_by_id") @db.Uuid
+  createdBy    Profile        @relation("DisposalCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById String?        @map("approved_by_id") @db.Uuid
+  approvedBy   Profile?       @relation("DisposalApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvedAt   DateTime?      @map("approved_at") @db.Timestamptz(3)
+  deletedById  String?        @map("deleted_by_id") @db.Uuid
+  deletedBy    Profile?       @relation("DisposalDeleter", fields: [deletedById], references: [id], onDelete: Restrict)
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  isDeleted    Boolean        @default(false) @map("is_deleted")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  items        DisposalItem[]
+
+  @@index([status, createdAt])
+  @@index([createdById, status])
+  @@index([isDeleted, createdAt])
+  @@map("disposal_slips")
+}
+
+model DisposalItem {
+  id             String       @id @default(uuid()) @db.Uuid
+  disposalSlipId String       @map("disposal_slip_id") @db.Uuid
+  disposalSlip   DisposalSlip @relation(fields: [disposalSlipId], references: [id], onDelete: Cascade)
+  productId      String       @map("product_id") @db.Uuid
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productBarcode String       @map("product_barcode")
+  productName    String       @map("product_name")
+  unit           String
+  quantity       Int
+  costPrice      Decimal      @map("cost_price") @db.Decimal(12, 2)
+  totalValue     Decimal      @map("total_value") @db.Decimal(12, 2)
+
+  @@index([disposalSlipId])
+  @@index([productId])
+  @@map("disposal_items")
+}
+
+model ReturnSlip {
+  id           String         @id @default(uuid()) @db.Uuid
+  code         String         @unique
+  invoiceId    String         @map("invoice_id") @db.Uuid
+  invoice      Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  reason       String?
+  evidenceUrl  String?        @map("evidence_url")
+  type         ReturnType
+  status       ApprovalStatus @default(PENDING)
+  createdById  String         @map("created_by_id") @db.Uuid
+  createdBy    Profile        @relation("ReturnCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById String?        @map("approved_by_id") @db.Uuid
+  approvedBy   Profile?       @relation("ReturnApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvedAt   DateTime?      @map("approved_at") @db.Timestamptz(3)
+  deletedById  String?        @map("deleted_by_id") @db.Uuid
+  deletedBy    Profile?       @relation("ReturnDeleter", fields: [deletedById], references: [id], onDelete: Restrict)
+  deletedAt    DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  isDeleted    Boolean        @default(false) @map("is_deleted")
+  totalRefund  Decimal        @default(0) @map("total_refund") @db.Decimal(12, 2)
+  difference   Decimal        @default(0) @db.Decimal(12, 2)
+  debtCredit   Decimal        @default(0) @map("debt_credit") @db.Decimal(12, 2)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  items        ReturnItem[]
+
+  @@index([invoiceId, status])
+  @@index([status, createdAt])
+  @@index([createdById, status])
+  @@index([isDeleted, createdAt])
+  @@map("return_slips")
+}
+
+model ReturnItem {
+  id              String         @id @default(uuid()) @db.Uuid
+  returnSlipId    String         @map("return_slip_id") @db.Uuid
+  returnSlip      ReturnSlip     @relation(fields: [returnSlipId], references: [id], onDelete: Cascade)
+  productId       String         @map("product_id") @db.Uuid
+  product         Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  invoiceDetailId String?        @map("invoice_detail_id") @db.Uuid
+  invoiceDetail   InvoiceDetail? @relation("ReturnedInvoiceDetail", fields: [invoiceDetailId], references: [id], onDelete: Restrict)
+  kind            ReturnItemKind
+  productBarcode  String         @map("product_barcode")
+  productName     String         @map("product_name")
+  unit            String
+  quantity        Int
+  unitPrice       Decimal        @map("unit_price") @db.Decimal(12, 2)
+  costPrice       Decimal        @map("cost_price") @db.Decimal(12, 2)
+  lineTotal       Decimal        @map("line_total") @db.Decimal(12, 2)
+
+  @@index([returnSlipId])
+  @@index([invoiceDetailId])
+  @@index([productId])
+  @@map("return_items")
+}
+
+model InventoryTransaction {
+  id          String                   @id @default(uuid()) @db.Uuid
+  productId   String                   @map("product_id") @db.Uuid
+  product     Product                  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  type        InventoryTransactionType
+  quantity    Int
+  stockAfter  Int                      @map("stock_after")
+  refType     String?                  @map("ref_type")
+  refId       String?                  @map("ref_id") @db.Uuid
+  createdById String                   @map("created_by_id") @db.Uuid
+  createdBy   Profile                  @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([productId, createdAt])
+  @@index([type, createdAt])
+  @@index([refType, refId])
+  @@index([createdById, createdAt])
+  @@map("inventory_transactions")
+}
+
+model DebtRecord {
+  id         String    @id @default(uuid()) @db.Uuid
+  customerId String    @map("customer_id") @db.Uuid
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  invoiceId  String?   @unique @map("invoice_id") @db.Uuid
+  invoice    Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  amount     Decimal   @db.Decimal(12, 2)
+  note       String?
+  settledAt  DateTime? @map("settled_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  payments   DebtPayment[]
+
+  @@index([customerId, createdAt])
+  @@map("debt_records")
+}
+
+model DebtPayment {
+  id              String            @id @default(uuid()) @db.Uuid
+  customerId      String            @map("customer_id") @db.Uuid
+  customer        Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  debtRecordId    String?           @map("debt_record_id") @db.Uuid
+  debtRecord      DebtRecord?       @relation(fields: [debtRecordId], references: [id], onDelete: Restrict)
+  invoiceId       String?           @map("invoice_id") @db.Uuid
+  invoice         Invoice?          @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  amount          Decimal           @db.Decimal(12, 2)
+  paymentMethod   DebtPaymentMethod? @map("payment_method")
+  paidAt          DateTime          @default(now()) @map("paid_at") @db.Timestamptz(3)
+  createdById     String            @map("created_by_id") @db.Uuid
+  createdBy       Profile           @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  note            String?
+
+  @@index([customerId, paidAt])
+  @@index([invoiceId])
+  @@index([debtRecordId])
+  @@map("debt_payments")
+}
+
+model Expense {
+  id          String          @id @default(uuid()) @db.Uuid
+  expenseDate DateTime        @map("expense_date") @db.Date
+  category    ExpenseCategory
+  amount      Decimal         @db.Decimal(12, 2)
+  notes       String?
+  createdById String          @map("created_by_id") @db.Uuid
+  createdBy   Profile         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([expenseDate, category])
+  @@map("expenses")
+}
+
+model StoreSettings {
+  id                Int      @id @default(1)
+  storeName         String   @map("store_name")
+  address           String
+  phone             String
+  bankName          String   @map("bank_name")
+  bankAccountNumber String   @map("bank_account_number")
+  bankAccountHolder String   @map("bank_account_holder")
+  updatedById       String?  @map("updated_by_id") @db.Uuid
+  updatedBy         Profile? @relation("StoreSettingsUpdater", fields: [updatedById], references: [id], onDelete: Restrict)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("store_settings")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  user      Profile  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  action    String
+  target    String
+  targetId  String   @map("target_id") @db.Uuid
+  details   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([userId, createdAt])
+  @@index([target, targetId])
+  @@map("audit_logs")
+}
