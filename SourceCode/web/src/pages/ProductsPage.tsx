@@ -51,11 +51,37 @@ export const ProductsPage: React.FC = () => {
   const [sellingPrice, setSellingPrice] = useState('');
   const [costPrice, setCostPrice] = useState('');
   const [unit, setUnit] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [imageUrlError, setImageUrlError] = useState('');
+  const [barcodeError, setBarcodeError] = useState('');
   const [formError, setFormError] = useState('');
   const [formNotice, setFormNotice] = useState<{
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+
+  const validateBarcode = (val: string): string => {
+    const trimmed = val.trim();
+    if (!trimmed) return 'Mã vạch phải gồm đúng 13 chữ số.';
+    if (!/^\d{13}$/.test(trimmed)) {
+      return 'Mã vạch phải gồm đúng 13 chữ số.';
+    }
+    return '';
+  };
+
+  const validateImageUrl = (url: string): string => {
+    const trimmed = url.trim();
+    if (!trimmed) return '';
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return 'Đường dẫn ảnh phải là URL hợp lệ bắt đầu bằng http:// hoặc https://';
+      }
+      return '';
+    } catch {
+      return 'Đường dẫn ảnh không hợp lệ (ví dụ: https://example.com/anh.jpg)';
+    }
+  };
 
   const { isOwner, isStaff } = useAuth();
   const { showSuccess, showError } = useToast();
@@ -104,6 +130,8 @@ export const ProductsPage: React.FC = () => {
         setSellingPrice(p.selling_price.toString());
         setCostPrice(p.cost_price ? p.cost_price.toString() : '');
         setUnit(p.unit);
+        setImageUrl(p.image_url || '');
+        setImageUrlError('');
         setActiveProduct(p);
       }
     }
@@ -157,11 +185,14 @@ export const ProductsPage: React.FC = () => {
   // Form Handlers
   const handleOpenCreate = () => {
     setBarcode('');
+    setBarcodeError('');
     setName('');
     setCategoryId(categories[0]?.id || '');
     setSellingPrice('');
     setCostPrice('');
     setUnit('');
+    setImageUrl('');
+    setImageUrlError('');
     setFormError('');
     setFormNotice(null);
     setActiveProduct(null);
@@ -171,11 +202,14 @@ export const ProductsPage: React.FC = () => {
 
   const handleOpenEdit = (p: Product) => {
     setBarcode(p.barcode);
+    setBarcodeError('');
     setName(p.name);
     setCategoryId(p.category_id);
     setSellingPrice(p.selling_price.toString());
     setCostPrice(p.cost_price ? p.cost_price.toString() : '');
     setUnit(p.unit);
+    setImageUrl(p.image_url || '');
+    setImageUrlError('');
     setFormError('');
     setFormNotice(null);
     setActiveProduct(p);
@@ -193,8 +227,11 @@ export const ProductsPage: React.FC = () => {
   const createMutation = useMutation({
     mutationFn: () => {
       setFormError('');
-      if (!barcode.trim()) throw new Error('Vui lòng nhập mã vạch sản phẩm.');
-      if (!/^\d{13}$/.test(barcode.trim())) throw new Error('Mã vạch sản phẩm phải gồm đúng 13 chữ số.');
+      const bErr = validateBarcode(barcode);
+      if (bErr) {
+        setBarcodeError(bErr);
+        throw new Error(bErr);
+      }
       if (!name.trim()) throw new Error('Vui lòng nhập tên sản phẩm.');
       if (!categoryId) throw new Error('Vui lòng chọn danh mục.');
       if (!unit.trim()) throw new Error('Vui lòng nhập đơn vị tính.');
@@ -202,6 +239,12 @@ export const ProductsPage: React.FC = () => {
       const cp = Number(costPrice);
       if (isNaN(sp) || sp <= 0) throw new Error('Giá bán phải là số lớn hơn 0.');
       if (isNaN(cp) || cp <= 0) throw new Error('Giá nhập phải là số lớn hơn 0.');
+
+      const imgErr = validateImageUrl(imageUrl);
+      if (imgErr) {
+        setImageUrlError(imgErr);
+        throw new Error(imgErr);
+      }
 
       const cat = categories.find((c) => c.id === categoryId);
       return api.products.create({
@@ -214,6 +257,7 @@ export const ProductsPage: React.FC = () => {
         unit: unit.trim(),
         stock_quantity: 0,
         min_stock: 5,
+        image_url: imageUrl.trim() || undefined,
       });
     },
     onSuccess: (prod) => {
@@ -238,6 +282,12 @@ export const ProductsPage: React.FC = () => {
       if (isNaN(sp) || sp <= 0) throw new Error('Giá bán phải là số lớn hơn 0.');
       if (isNaN(cp) || cp <= 0) throw new Error('Giá nhập phải là số lớn hơn 0.');
 
+      const imgErr = validateImageUrl(imageUrl);
+      if (imgErr) {
+        setImageUrlError(imgErr);
+        throw new Error(imgErr);
+      }
+
       const cat = categories.find((c) => c.id === categoryId);
       return api.products.update(currentProduct.barcode, {
         name: name.trim(),
@@ -246,6 +296,7 @@ export const ProductsPage: React.FC = () => {
         selling_price: sp,
         cost_price: cp,
         unit: unit.trim(),
+        image_url: imageUrl.trim() || undefined,
       });
     },
     onSuccess: (prod) => {
@@ -302,12 +353,34 @@ export const ProductsPage: React.FC = () => {
                 <input
                   type="text"
                   value={barcode}
-                  onChange={(e) => setBarcode(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setBarcode(val);
+                    if (val) {
+                      setBarcodeError(validateBarcode(val));
+                    } else {
+                      setBarcodeError('');
+                    }
+                  }}
+                  onBlur={() => {
+                    if (barcode) {
+                      setBarcodeError(validateBarcode(barcode));
+                    }
+                  }}
                   placeholder="Nhập hoặc quét mã vạch 13 chữ số"
-                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)] pr-10"
+                  className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none pr-10 ${
+                    barcodeError
+                      ? 'border-danger focus:border-danger'
+                      : 'border-slate-200 focus:border-[var(--color-primary)]'
+                  }`}
                 />
                 <BarcodeIcon className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
               </div>
+              {barcodeError && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  {barcodeError}
+                </p>
+              )}
             </div>
 
             <div>
@@ -404,6 +477,30 @@ export const ProductsPage: React.FC = () => {
                 Sản phẩm mới có tồn kho bằng 0. Nhập hàng để cập nhật số lượng.
               </p>
             </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                URL ảnh sản phẩm (tùy chọn)
+              </label>
+              <input
+                type="text"
+                value={imageUrl}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setImageUrl(val);
+                  setImageUrlError(validateImageUrl(val));
+                }}
+                placeholder="https://example.com/anh-san-pham.jpg"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  imageUrlError
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[var(--color-primary)]'
+                }`}
+              />
+              {imageUrlError && (
+                <p className="mt-1.5 text-xs text-danger font-medium">{imageUrlError}</p>
+              )}
+            </div>
           </div>
 
           <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -475,10 +572,19 @@ export const ProductsPage: React.FC = () => {
                   type="text"
                   value={currentProduct.barcode}
                   readOnly
-                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600 pr-10 cursor-not-allowed font-mono"
+                  className={`w-full px-3.5 py-2.5 rounded-lg border bg-slate-50 text-sm text-slate-600 pr-10 cursor-not-allowed font-mono ${
+                    !/^\d{13}$/.test(currentProduct.barcode)
+                      ? 'border-danger'
+                      : 'border-slate-200'
+                  }`}
                 />
                 <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
               </div>
+              {!/^\d{13}$/.test(currentProduct.barcode) && (
+                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
+                  Mã vạch phải gồm đúng 13 chữ số.
+                </p>
+              )}
             </div>
 
             <div>
@@ -574,6 +680,30 @@ export const ProductsPage: React.FC = () => {
               <p className="text-xs text-slate-500">
                 Số lượng tồn kho được quản lý qua nghiệp vụ nhập, bán và điều chỉnh hàng.
               </p>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                URL ảnh sản phẩm (tùy chọn)
+              </label>
+              <input
+                type="text"
+                value={imageUrl}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setImageUrl(val);
+                  setImageUrlError(validateImageUrl(val));
+                }}
+                placeholder="https://example.com/anh-san-pham.jpg"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  imageUrlError
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[var(--color-primary)]'
+                }`}
+              />
+              {imageUrlError && (
+                <p className="mt-1.5 text-xs text-danger font-medium">{imageUrlError}</p>
+              )}
             </div>
           </div>
 
@@ -697,23 +827,20 @@ export const ProductsPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Giá nhập chỉ hiển thị với Chủ cửa hàng (SPEC Mục 8) */}
-            {isOwner && (
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Giá nhập (VND)
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={currentProduct.cost_price ? currentProduct.cost_price.toLocaleString('vi-VN') : '0'}
-                    readOnly
-                    className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-800 pr-10 cursor-not-allowed font-medium"
-                  />
-                  <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
-                </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Giá nhập (VND)
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={currentProduct.cost_price ? currentProduct.cost_price.toLocaleString('vi-VN') : '0'}
+                  readOnly
+                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-800 pr-10 cursor-not-allowed font-medium"
+                />
+                <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
               </div>
-            )}
+            </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -750,6 +877,32 @@ export const ProductsPage: React.FC = () => {
                 Số lượng tồn kho được quản lý qua nghiệp vụ nhập, bán và điều chỉnh hàng.
               </p>
             </div>
+
+            {currentProduct.image_url ? (
+              <div className="md:col-span-2 space-y-2">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Ảnh sản phẩm
+                </label>
+                <div className="flex items-center gap-4">
+                  <img
+                    src={currentProduct.image_url}
+                    alt={currentProduct.name}
+                    className="w-20 h-20 object-cover rounded-lg border border-slate-200"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                  <a
+                    href={currentProduct.image_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-[var(--color-primary)] hover:underline break-all"
+                  >
+                    {currentProduct.image_url}
+                  </a>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="pt-4 border-t border-slate-100 flex justify-end">

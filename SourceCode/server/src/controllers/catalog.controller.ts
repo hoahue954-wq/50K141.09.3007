@@ -9,8 +9,8 @@ import {
 } from '../validators/catalog.validators.js';
 import { AppError } from '../utils/AppError.js';
 
-function isOwner(roleCode: string | undefined): boolean {
-  return roleCode === 'OWNER';
+function canViewCostPrice(roleCode: string | undefined): boolean {
+  return roleCode === 'OWNER' || roleCode === 'STAFF';
 }
 
 function getParam(req: Parameters<RequestHandler>[0], name: string): string {
@@ -51,7 +51,7 @@ export const listProducts: RequestHandler = async (req, res) => {
     await catalogService.listProducts({
       search: query.search,
       categoryId: query.category_id,
-      includeCostPrice: isOwner(res.locals.authProfile?.role.code),
+      includeCostPrice: canViewCostPrice(res.locals.authProfile?.role.code),
     }),
   );
 };
@@ -60,7 +60,7 @@ export const getProduct: RequestHandler = async (req, res) => {
   res.json(
     await catalogService.getProduct(
       getParam(req, 'barcode'),
-      isOwner(res.locals.authProfile?.role.code),
+      canViewCostPrice(res.locals.authProfile?.role.code),
     ),
   );
 };
@@ -68,7 +68,7 @@ export const getProduct: RequestHandler = async (req, res) => {
 export const createProduct: RequestHandler = async (req, res) => {
   const input = productCreateSchema.parse(req.body);
   res.status(201).json(
-    await catalogService.createProduct(input, isOwner(res.locals.authProfile?.role.code)),
+    await catalogService.createProduct(input, canViewCostPrice(res.locals.authProfile?.role.code)),
   );
 };
 
@@ -78,7 +78,7 @@ export const updateProduct: RequestHandler = async (req, res) => {
     await catalogService.updateProduct(
       getParam(req, 'barcode'),
       input,
-      isOwner(res.locals.authProfile?.role.code),
+      canViewCostPrice(res.locals.authProfile?.role.code),
     ),
   );
 };

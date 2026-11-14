@@ -22,6 +22,6 @@ invoiceRouter.get('/invoices', listInvoices);
 invoiceRouter.get('/invoices/code/:code', getInvoiceByCode);
 invoiceRouter.get('/invoices/:id', getInvoice);
 invoiceRouter.post('/invoices', createInvoice);
-invoiceRouter.patch('/invoices/:id/status', requireRole(RoleCode.OWNER), settleInvoice);
-invoiceRouter.post('/invoices/:id/settle', requireRole(RoleCode.OWNER), settleInvoiceLegacy);
+invoiceRouter.patch('/invoices/:id/status', settleInvoice);
+invoiceRouter.post('/invoices/:id/settle', settleInvoiceLegacy);
 invoiceRouter.delete('/invoices/:id', requireRole(RoleCode.OWNER), deleteInvoice);

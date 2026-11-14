@@ -81,7 +81,14 @@ export const AppRoutes: React.FC = () => {
         <Route path="products" element={<ProductsPage />} />
         <Route path="categories" element={<CategoriesPage />} />
         <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
-        <Route path="inventory" element={<InventoryPage />} />
+        <Route
+          path="inventory"
+          element={
+            <OwnerOnlyRoute>
+              <InventoryPage />
+            </OwnerOnlyRoute>
+          }
+        />
         <Route path="disposals" element={<DisposalsPage />} />
         <Route path="returns" element={<ReturnsPage />} />
 

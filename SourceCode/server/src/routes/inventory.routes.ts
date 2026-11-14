@@ -10,8 +10,8 @@ import { requireRole } from '../middlewares/requireRole.js';
 
 export const inventoryRouter = Router();
 
-inventoryRouter.use(authenticate);
+inventoryRouter.use(authenticate, requireRole(RoleCode.OWNER));
 inventoryRouter.get('/inventory', getInventoryStats);
 inventoryRouter.get('/inventory/stats', getInventoryStats);
-inventoryRouter.get('/inventory/low-stock', requireRole(RoleCode.OWNER), getLowStock);
-inventoryRouter.get('/inventory/transactions', requireRole(RoleCode.OWNER), getInventoryTransactions);
+inventoryRouter.get('/inventory/low-stock', getLowStock);
+inventoryRouter.get('/inventory/transactions', getInventoryTransactions);

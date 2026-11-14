@@ -33,6 +33,7 @@ const purchaseOrderItemSchema = z
   }));
 
 const purchaseOrderFields = {
+  code: z.string().trim().optional(),
   order_date: dateValue.optional(),
   supplier_name: z.string().trim().optional(),
   notes: z.string().trim().optional(),

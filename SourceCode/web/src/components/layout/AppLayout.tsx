@@ -9,7 +9,6 @@ import {
   Package,
   FolderTree,
   Truck,
-  Warehouse,
   ArrowLeftRight,
   RotateCcw,
   BarChart3,
@@ -170,25 +169,6 @@ export const AppLayout: React.FC = () => {
               <>
                 <Truck className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
                 <span>Nhập hàng</span>
-              </>
-            )}
-          </NavLink>
-
-          {/* Kho */}
-          <NavLink
-            to="/inventory"
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-white text-[var(--color-primary)] font-bold shadow-xs'
-                  : 'text-white/85 hover:bg-white/10 hover:text-white'
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <Warehouse className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
-                <span>Kho</span>
               </>
             )}
           </NavLink>
@@ -386,7 +366,6 @@ export const AppLayout: React.FC = () => {
                   { to: '/products', label: 'Sản phẩm', icon: <Package className="w-5 h-5" /> },
                   { to: '/categories', label: 'Danh mục sản phẩm', icon: <FolderTree className="w-5 h-5" /> },
                   { to: '/purchase-orders', label: 'Nhập hàng', icon: <Truck className="w-5 h-5" /> },
-                  { to: '/inventory', label: 'Kho', icon: <Warehouse className="w-5 h-5" /> },
                   { to: '/invoices', label: 'Hóa đơn', icon: <Receipt className="w-5 h-5" /> },
                   { to: '/disposals', label: 'Hủy hàng', icon: <ArrowLeftRight className="w-5 h-5" /> },
                   { to: '/returns', label: 'Đổi/trả hàng', icon: <RotateCcw className="w-5 h-5" /> },

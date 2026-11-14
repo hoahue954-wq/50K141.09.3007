@@ -253,17 +253,17 @@ test('rejects editing or deleting a completed purchase order', () => {
   );
 });
 
-test('STAFF only lists purchase orders created by their own profile', async () => {
+test('STAFF can list purchase orders from all store users', async () => {
   let creatorId: string | undefined;
   purchaseOrderRepository.findMany = async (options) => {
     creatorId = options.creatorId;
     return [];
   };
   await purchaseOrderService.list(purchaseOrderListQuerySchema.parse({}), staff);
-  assert.equal(creatorId, staff.id);
+  assert.equal(creatorId, undefined);
 });
 
-test('STAFF never receives import prices from purchase-order create, list, or detail responses', async () => {
+test('STAFF receives import prices from purchase-order create, list, and detail responses', async () => {
   purchaseOrderRepository.findProducts = async () => [product];
   purchaseOrderRepository.createCode = async () => 'PHN000124';
   purchaseOrderRepository.create = async (input) => makeOrder(input);
@@ -293,7 +293,7 @@ test('STAFF never receives import prices from purchase-order create, list, or de
 
   for (const response of [created, listed[0], detail]) {
     assert.ok(response);
-    assert.equal('cost_price' in response.items[0]!, false);
+    assert.equal(response.items[0]?.cost_price, 4);
     assert.equal(JSON.stringify(response).includes('import_price'), false);
   }
 });

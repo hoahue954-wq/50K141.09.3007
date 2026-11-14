@@ -19,3 +19,26 @@ export const getMonthlyReport: RequestHandler = async (req, res) => {
   const { year, month } = monthlyReportSchema.parse(req.query);
   res.json(await reportService.monthly(year, month));
 };
+
+function getProfile(res: Parameters<RequestHandler>[1]) {
+  return res.locals.authProfile!;
+}
+
+export const importExpenses: RequestHandler = async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({
+      statusCode: 400,
+      code: 'MISSING_FILE',
+      message: 'Vui lòng chọn tệp Excel để nhập chi phí.',
+    });
+    return;
+  }
+  const month = req.body?.month || req.query?.month;
+  const result = await reportService.importExpensesExcel(
+    req.file.buffer,
+    req.file.originalname,
+    typeof month === 'string' ? month : undefined,
+    getProfile(res).id
+  );
+  res.status(200).json(result);
+};

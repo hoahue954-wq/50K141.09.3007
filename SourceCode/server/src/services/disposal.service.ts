@@ -161,7 +161,6 @@ export const disposalService = {
     const limit = query.limit ?? 50;
     const dateRange = getDateRange(query);
     const slips = await disposalRepository.findMany({
-      ...(profile.role.code === 'STAFF' ? { creatorId: profile.id } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.search ? { search: query.search } : {}),
       ...(dateRange ? { dateRange } : {}),
@@ -171,10 +170,7 @@ export const disposalService = {
   },
 
   async getById(id: string, profile: AuthenticatedProfile): Promise<DisposalDto> {
-    const slip = await disposalRepository.findById(
-      id,
-      profile.role.code === 'STAFF' ? profile.id : undefined,
-    );
+    const slip = await disposalRepository.findById(id);
     if (!slip) throw new AppError(404, 'Không tìm thấy phiếu hủy.', 'DISPOSAL_NOT_FOUND');
     return toDto(slip, profile.role.code === 'OWNER');
   },

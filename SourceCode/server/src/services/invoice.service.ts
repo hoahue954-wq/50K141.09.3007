@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { invoiceRepository } from '../repositories/invoice.repository.js';
+import { calculateRevenueByDateRange } from './report.service.js';
 import { debtService } from './debt.service.js';
 import { AppError } from '../utils/AppError.js';
 import { getHcmDateRange, getHcmDateString, getHcmWeekRange } from '../utils/date.js';
@@ -241,21 +242,18 @@ export const invoiceService = {
       };
     }
 
+    const revenueData = await calculateRevenueByDateRange(today, today);
     const metrics = await invoiceRepository.todayMetrics(start, end);
     const week = getHcmWeekRange(new Date());
     const topProducts = await invoiceRepository.topSellingProducts(week.start, week.end);
-    const amounts = new Map(metrics.byMethod.map((item) => [
-      item.paymentMethod,
-      Number(item._sum.totalAmount ?? 0),
-    ]));
 
     return {
-      todayRevenue: Number(metrics.totalRevenue),
-      todayCash: amounts.get('CASH') ?? 0,
-      todayTransfer: amounts.get('TRANSFER') ?? 0,
-      todayDebt: amounts.get('DEBT') ?? 0,
+      todayRevenue: revenueData.totalRevenue.toNumber(),
+      todayCash: revenueData.payments.cash.toNumber(),
+      todayTransfer: revenueData.payments.transfer.toNumber(),
+      todayDebt: revenueData.payments.debt.toNumber(),
       lowStockCount: metrics.lowStockCount,
-      todayInvoiceCount: metrics.count,
+      todayInvoiceCount: revenueData.invoiceCount,
       latestInvoices: metrics.invoices.map((invoice) => invoiceDto(invoice, true)),
       topSellingProducts: topProducts.map((product) => ({
         barcode: product.productBarcode,

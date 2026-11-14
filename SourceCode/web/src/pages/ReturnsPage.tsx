@@ -33,9 +33,11 @@ interface EditItemRow {
   product_barcode: string;
   product_name: string;
   bought_quantity: number;
+  available_quantity: number;
   quantity: number;
   old_quantity: number;
   type: 'return' | 'exchange';
+  exchange_quantity?: number;
   exchange_barcode?: string;
   exchange_name?: string;
   stock_quantity: number;
@@ -77,19 +79,11 @@ export const ReturnsPage: React.FC = () => {
 
   // Edit Flow State (Figma Sửa phiếu đổi trả)
   const [editRows, setEditRows] = useState<EditItemRow[]>([]);
-  const [editHistories, setEditHistories] = useState<Record<string, SlipHistoryItem[]>>({
-    'ret-1': [
-      {
-        id: 'h-1',
-        time: '05/11/2026 · 10:10',
-        author: 'Lê Minh Anh',
-        description: 'Tạo phiếu đổi trả · 2 sản phẩm, tổng số lượng 5',
-      },
-    ],
-  });
-  const [slipStatuses, setSlipStatuses] = useState<Record<string, 'recorded' | 'edited'>>({
-    'ret-1': 'recorded',
-  });
+  const [editHistories, setEditHistories] = useState<Record<string, SlipHistoryItem[]>>({});
+  const [slipStatuses, setSlipStatuses] = useState<Record<string, 'recorded' | 'edited'>>({});
+  const [editErrorMessage, setEditErrorMessage] = useState('');
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
+  const [isLoadingSlip, setIsLoadingSlip] = useState(false);
 
   // Modals for Edit Flow
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
@@ -120,6 +114,32 @@ export const ReturnsPage: React.FC = () => {
     queryKey: ['products'],
     queryFn: () => api.products.list(),
   });
+
+  const purchasedQuantity = (invoice: Invoice, barcode: string) =>
+    invoice.items
+      .filter((item) => item.product_barcode === barcode)
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+  const previouslyReturnedQuantity = (slipId: string, invoiceCode: string, barcode: string) =>
+    returnSlips
+      .filter((slip) =>
+        slip.id !== slipId &&
+        slip.original_invoice_code === invoiceCode &&
+        slip.status !== 'rejected'
+      )
+      .flatMap((slip) => slip.items)
+      .filter((item) => item.product_barcode === barcode)
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+  const availableExchangeStock = (slip: ReturnSlip, barcode: string) => {
+    const stock = products.find((product) => product.barcode === barcode)?.stock_quantity ?? 0;
+    const alreadyApplied = slip.status === 'approved'
+      ? slip.exchange_items
+          ?.filter((item) => item.product_barcode === barcode)
+          .reduce((sum, item) => sum + item.quantity, 0) ?? 0
+      : 0;
+    return stock + alreadyApplied;
+  };
 
   // Start Create Flow
   const handleStartCreate = () => {
@@ -222,54 +242,74 @@ export const ReturnsPage: React.FC = () => {
     onError: (err: any) => showError(err.message),
   });
 
-  // Start Edit Flow
-  const handleStartEdit = (slip: ReturnSlip) => {
+  const handleViewSlip = async (slip: ReturnSlip) => {
     setSelectedSlip(slip);
-    // Chuẩn bị dữ liệu dòng sửa
-    const rows: EditItemRow[] = slip.items.map((it, idx) => {
-      const prod = products.find((p) => p.barcode === it.product_barcode);
-      const exItem = slip.exchange_items?.[idx];
-      const exProd = exItem ? products.find((p) => p.barcode === exItem.product_barcode) : undefined;
-      return {
-        product_barcode: it.product_barcode,
-        product_name: it.product_name,
-        bought_quantity: Math.max(it.quantity + 2, 4),
-        quantity: it.quantity,
-        old_quantity: it.quantity,
-        type: slip.type,
-        exchange_barcode: exItem?.product_barcode || products[0]?.barcode,
-        exchange_name: exItem?.product_name || products[0]?.name,
-        stock_quantity: exProd?.stock_quantity ?? (prod?.stock_quantity ?? 18),
-        reason: 'Khách muốn đổi loại',
-      };
-    });
-
-    if (rows.length === 1 && products.length > 1) {
-      // Đảm bảo có ít nhất 2 dòng mẫu như Figma nếu phiếu chỉ có 1 dòng
-      const secondProd = products[1] || products[0];
-      rows.push({
-        product_barcode: secondProd.barcode,
-        product_name: secondProd.name,
-        bought_quantity: 10,
-        quantity: 3,
-        old_quantity: 3,
-        type: 'exchange',
-        exchange_barcode: products[2]?.barcode || products[0]?.barcode,
-        exchange_name: products[2]?.name || 'Mì Omachi sườn hầm',
-        stock_quantity: 8,
-        reason: 'Khách muốn đổi loại',
-      });
+    setMode('detail');
+    setIsLoadingSlip(true);
+    try {
+      setSelectedInvoice(await api.invoices.getByCode(slip.original_invoice_code));
+    } catch (error) {
+      setSelectedInvoice(null);
+      showError((error as Error).message);
+    } finally {
+      setIsLoadingSlip(false);
     }
+  };
 
-    setEditRows(rows);
+  const handleStartEdit = async (slip: ReturnSlip) => {
+    setSelectedSlip(slip);
     setMode('edit');
+    setIsLoadingEdit(true);
+    try {
+      const invoice = selectedInvoice && selectedInvoice.code === slip.original_invoice_code
+        ? selectedInvoice
+        : await api.invoices.getByCode(slip.original_invoice_code);
+      if (!invoice) {
+        throw new Error(`Không tìm thấy hóa đơn gốc ${slip.original_invoice_code}`);
+      }
+      setSelectedInvoice(invoice);
+      setEditRows(slip.items.map((item, index) => {
+        const exchangeItem = slip.exchange_items?.[index];
+        const bought = purchasedQuantity(invoice, item.product_barcode);
+        const previouslyReturned = previouslyReturnedQuantity(
+          slip.id,
+          slip.original_invoice_code,
+          item.product_barcode,
+        );
+        return {
+          product_barcode: item.product_barcode,
+          product_name: item.product_name,
+          bought_quantity: bought,
+          available_quantity: Math.max(0, bought - previouslyReturned),
+          quantity: item.quantity,
+          old_quantity: item.quantity,
+          type: exchangeItem ? 'exchange' : 'return',
+          exchange_quantity: exchangeItem?.quantity,
+          exchange_barcode: exchangeItem?.product_barcode,
+          exchange_name: exchangeItem?.product_name,
+          stock_quantity: exchangeItem
+            ? availableExchangeStock(slip, exchangeItem.product_barcode)
+            : 0,
+          reason: slip.reason || '',
+        };
+      }));
+    } catch (error) {
+      setMode('detail');
+      showError((error as Error).message);
+    } finally {
+      setIsLoadingEdit(false);
+    }
   };
 
   // Validation kiểm tra lỗi dòng sửa
   const getRowError = (row: EditItemRow): string | null => {
     if (row.quantity <= 0) return 'Số lượng phải lớn hơn 0';
-    if (row.quantity > row.bought_quantity) return 'Số lượng trả vượt quá số lượng đã mua';
-    if (row.type === 'exchange' && row.quantity > row.stock_quantity) {
+    if (row.quantity > row.available_quantity) return 'Số lượng trả vượt quá số lượng còn được phép trả';
+    if (row.type === 'exchange' && !row.exchange_barcode) return 'Vui lòng chọn sản phẩm đổi';
+    const exchangeQuantity = row.quantity === row.old_quantity
+      ? row.exchange_quantity ?? row.quantity
+      : row.quantity;
+    if (row.type === 'exchange' && exchangeQuantity > row.stock_quantity) {
       return 'Sản phẩm đổi không đủ tồn kho';
     }
     return null;
@@ -277,47 +317,74 @@ export const ReturnsPage: React.FC = () => {
 
   const hasAnyEditError = editRows.some((r) => getRowError(r) !== null);
 
+  const updateMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedSlip) throw new Error('Chưa chọn phiếu đổi/trả cần sửa.');
+      const reason = editRows[0]?.reason.trim();
+      if (!reason) throw new Error('Vui lòng nhập lý do đổi/trả.');
+      const hasExchange = editRows.some((row) => row.type === 'exchange');
+      return api.returnSlips.update(selectedSlip.id, {
+        type: hasExchange ? 'exchange' : 'return',
+        reason,
+        items: editRows.map((row) => ({
+          product_barcode: row.product_barcode,
+          quantity: row.quantity,
+        })),
+        exchange_items: hasExchange
+          ? editRows.flatMap((row) =>
+              row.type === 'exchange' && row.exchange_barcode
+              ? [{
+                  product_barcode: row.exchange_barcode,
+                  quantity: row.quantity === row.old_quantity
+                    ? row.exchange_quantity ?? row.quantity
+                    : row.quantity,
+                }]
+                : [],
+            )
+          : undefined,
+      });
+    },
+    onSuccess: (slip) => {
+      const history: SlipHistoryItem = {
+        id: `h-${Date.now()}`,
+        time: formatDateTime(new Date().toISOString()),
+        author: user?.full_name || slip.creator_name,
+        description: `Sửa phiếu đổi trả · ${slip.items.length} sản phẩm, tổng số lượng ${slip.items.reduce((sum, item) => sum + item.quantity, 0)}`,
+      };
+      setSelectedSlip(slip);
+      setSlipStatuses((previous) => ({ ...previous, [slip.id]: 'edited' }));
+      setEditHistories((previous) => ({
+        ...previous,
+        [slip.id]: [history, ...(previous[slip.id] || [{
+          id: `created-${slip.id}`,
+          time: formatDateTime(slip.slip_date),
+          author: slip.creator_name,
+          description: `Tạo phiếu đổi/trả · ${slip.items.length} sản phẩm`,
+        }])],
+      }));
+      queryClient.invalidateQueries({ queryKey: ['return-slips'] });
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      setIsConfirmModalOpen(false);
+      setIsSuccessModalOpen(true);
+    },
+    onError: (error) => {
+      setEditErrorMessage(error.message);
+      setIsErrorModalOpen(true);
+      showError(error.message);
+    },
+  });
+
   const handleConfirmSaveEdit = () => {
     if (!selectedSlip) return;
     setIsConfirmModalOpen(false);
-
-    try {
-      // Cập nhật trạng thái sang "Đã chỉnh sửa"
-      setSlipStatuses((prev) => ({ ...prev, [selectedSlip.id]: 'edited' }));
-
-      // Ghi lịch sử chỉnh sửa
-      const newHistory: SlipHistoryItem = {
-        id: `h-${Date.now()}`,
-        time: formatDateTime(new Date().toISOString()),
-        author: user?.full_name || 'Thảo Nguyễn',
-        description: `Sửa số lượng: ${editRows.map((r) => `${r.product_name}: ${r.old_quantity} → ${r.quantity}`).join('; ')}`,
-      };
-
-      setEditHistories((prev) => ({
-        ...prev,
-        [selectedSlip.id]: [newHistory, ...(prev[selectedSlip.id] || [])],
-      }));
-
-      // Cập nhật số lượng phiếu đang chọn
-      const updatedSlip: ReturnSlip = {
-        ...selectedSlip,
-        items: selectedSlip.items.map((it, idx) => {
-          const edit = editRows[idx];
-          return edit ? { ...it, quantity: edit.quantity, total_amount: edit.quantity * it.selling_price } : it;
-        }),
-      };
-      setSelectedSlip(updatedSlip);
-
-      setIsSuccessModalOpen(true);
-    } catch {
-      setIsErrorModalOpen(true);
-    }
+    updateMutation.mutate();
   };
 
   // Thống kê 3 thẻ Figma
-  const totalSlipsCount = returnSlips.length > 0 ? returnSlips.length : 36;
-  const exchangeSlipsCount = returnSlips.filter((s) => s.type === 'exchange').length || 14;
-  const returnSlipsCount = returnSlips.filter((s) => s.type === 'return').length || 22;
+  const totalSlipsCount = returnSlips.length;
+  const exchangeSlipsCount = returnSlips.filter((s) => s.type === 'exchange').length;
+  const returnSlipsCount = returnSlips.filter((s) => s.type === 'return').length;
 
   // Lọc danh sách
   const filteredSlips = returnSlips.filter((s) => {
@@ -327,7 +394,8 @@ export const ReturnsPage: React.FC = () => {
       s.original_invoice_code.toLowerCase().includes(search.toLowerCase()) ||
       s.creator_name.toLowerCase().includes(search.toLowerCase());
     const matchDate = !dateFilter || formatDate(s.slip_date) === dateFilter;
-    const status = slipStatuses[s.id] || (s.status === 'approved' ? 'recorded' : 'edited');
+    const status = slipStatuses[s.id] ||
+      (s.status === 'approved' || s.status === 'pending' ? 'recorded' : 'edited');
     const matchStatus = statusFilter === 'all' || status === statusFilter;
     return matchSearch && matchDate && matchStatus;
   });
@@ -854,6 +922,10 @@ export const ReturnsPage: React.FC = () => {
   // --------------------------------------------------------------------------
   // MÀN HÌNH SỬA PHIẾU ĐỔI TRẢ (Figma: Sửa phiếu đổi trả hàng)
   // --------------------------------------------------------------------------
+  if (mode === 'edit' && isLoadingEdit) {
+    return <LoadingSpinner message="Đang tải dữ liệu hóa đơn gốc..." />;
+  }
+
   if (mode === 'edit' && selectedSlip) {
     const slipStatus = slipStatuses[selectedSlip.id] || 'recorded';
     const totalQty = editRows.reduce((sum, r) => sum + r.quantity, 0);
@@ -940,6 +1012,11 @@ export const ReturnsPage: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {editRows.map((row, idx) => {
                   const errorMsg = getRowError(row);
+                  const invoiceProducts = selectedInvoice?.items.filter((item, index, allItems) =>
+                    allItems.findIndex((candidate) =>
+                      candidate.product_barcode === item.product_barcode
+                    ) === index
+                  ) || [];
                   return (
                     <tr key={idx} className="hover:bg-slate-50/50">
                       {/* Sản phẩm gốc */}
@@ -947,12 +1024,26 @@ export const ReturnsPage: React.FC = () => {
                         <select
                           value={row.product_barcode}
                           onChange={(e) => {
-                            const p = products.find((prod) => prod.barcode === e.target.value);
-                            if (p) {
+                            const invoiceItem = selectedInvoice?.items.find(
+                              (item) => item.product_barcode === e.target.value
+                            );
+                            if (invoiceItem && selectedInvoice && selectedSlip) {
+                              const bought = purchasedQuantity(selectedInvoice, invoiceItem.product_barcode);
+                              const previouslyReturned = previouslyReturnedQuantity(
+                                selectedSlip.id,
+                                selectedSlip.original_invoice_code,
+                                invoiceItem.product_barcode,
+                              );
                               setEditRows((prev) =>
                                 prev.map((r, i) =>
                                   i === idx
-                                    ? { ...r, product_barcode: p.barcode, product_name: p.name }
+                                    ? {
+                                        ...r,
+                                        product_barcode: invoiceItem.product_barcode,
+                                        product_name: invoiceItem.product_name,
+                                        bought_quantity: bought,
+                                        available_quantity: Math.max(0, bought - previouslyReturned),
+                                      }
                                     : r
                                 )
                               );
@@ -960,9 +1051,9 @@ export const ReturnsPage: React.FC = () => {
                           }}
                           className="w-48 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs bg-white text-slate-800 font-medium"
                         >
-                          {products.map((p) => (
-                            <option key={p.barcode} value={p.barcode}>
-                              {p.name}
+                          {invoiceProducts.map((item) => (
+                            <option key={item.product_barcode} value={item.product_barcode}>
+                              {item.product_name}
                             </option>
                           ))}
                         </select>
@@ -1020,7 +1111,7 @@ export const ReturnsPage: React.FC = () => {
                       <td className="py-3 px-3">
                         {row.type === 'exchange' ? (
                           <select
-                            value={row.exchange_barcode}
+                            value={row.exchange_barcode || ''}
                             onChange={(e) => {
                               const p = products.find((prod) => prod.barcode === e.target.value);
                               if (p) {
@@ -1031,7 +1122,9 @@ export const ReturnsPage: React.FC = () => {
                                           ...r,
                                           exchange_barcode: p.barcode,
                                           exchange_name: p.name,
-                                          stock_quantity: p.stock_quantity,
+                                            stock_quantity: selectedSlip
+                                              ? availableExchangeStock(selectedSlip, p.barcode)
+                                              : p.stock_quantity,
                                         }
                                       : r
                                   )
@@ -1040,6 +1133,7 @@ export const ReturnsPage: React.FC = () => {
                             }}
                             className="w-52 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs bg-white text-slate-800"
                           >
+                            <option value="">Chọn sản phẩm đổi</option>
                             {products.map((p) => (
                               <option key={p.barcode} value={p.barcode}>
                                 {p.name}
@@ -1064,7 +1158,7 @@ export const ReturnsPage: React.FC = () => {
                           onChange={(e) => {
                             const val = e.target.value;
                             setEditRows((prev) =>
-                              prev.map((r, i) => (i === idx ? { ...r, reason: val } : r))
+                              prev.map((r) => ({ ...r, reason: val }))
                             );
                           }}
                           className="w-44 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-700"
@@ -1126,7 +1220,7 @@ export const ReturnsPage: React.FC = () => {
             </button>
             <button
               type="button"
-              disabled={hasAnyEditError}
+              disabled={hasAnyEditError || updateMutation.isPending}
               onClick={() => setIsConfirmModalOpen(true)}
               className="px-5 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-40 flex items-center gap-1.5"
             >
@@ -1229,9 +1323,10 @@ export const ReturnsPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleConfirmSaveEdit}
+                  disabled={updateMutation.isPending}
                   className="px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm"
                 >
-                  Xác nhận
+                  {updateMutation.isPending ? 'Đang lưu...' : 'Xác nhận'}
                 </button>
               </div>
             </div>
@@ -1294,6 +1389,7 @@ export const ReturnsPage: React.FC = () => {
               </div>
 
               <p className="text-sm font-bold text-slate-800">Không thể lưu thay đổi</p>
+              <p className="text-xs text-slate-600">{editErrorMessage}</p>
 
               <button
                 type="button"
@@ -1312,10 +1408,20 @@ export const ReturnsPage: React.FC = () => {
   // --------------------------------------------------------------------------
   // MÀN HÌNH CHI TIẾT PHIẾU ĐỔI TRẢ (Figma: Chi tiết phiếu đổi trả hàng)
   // --------------------------------------------------------------------------
+  if (mode === 'detail' && isLoadingSlip) {
+    return <LoadingSpinner message="Đang tải thông tin hóa đơn gốc..." />;
+  }
+
   if (mode === 'detail' && selectedSlip) {
     const slipStatus = slipStatuses[selectedSlip.id] || 'recorded';
     const totalQty = selectedSlip.items.reduce((s, it) => s + it.quantity, 0) +
       (selectedSlip.exchange_items?.reduce((s, it) => s + it.quantity, 0) || 0);
+    const histories = editHistories[selectedSlip.id] || [{
+      id: `created-${selectedSlip.id}`,
+      time: formatDateTime(selectedSlip.slip_date),
+      author: selectedSlip.creator_name,
+      description: `Tạo phiếu đổi/trả · ${selectedSlip.items.length} sản phẩm, tổng số lượng ${totalQty}`,
+    }];
 
     return (
       <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6">
@@ -1379,7 +1485,7 @@ export const ReturnsPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <h2 className="font-bold text-slate-800 text-sm">Danh sách sản phẩm</h2>
             <span className="text-xs text-slate-500 font-medium">
-              {selectedSlip.items.length} sản phẩm · Tổng số lượng: {totalQty || 5}
+              {selectedSlip.items.length} sản phẩm · Tổng số lượng: {totalQty}
             </span>
           </div>
 
@@ -1403,19 +1509,21 @@ export const ReturnsPage: React.FC = () => {
                     <tr key={idx} className="hover:bg-slate-50/50">
                       <td className="py-3 px-3 font-semibold text-slate-800">{it.product_name}</td>
                       <td className="py-3 px-2 text-center font-medium text-slate-600">
-                        {it.quantity + 2}
+                        {selectedInvoice
+                          ? purchasedQuantity(selectedInvoice, it.product_barcode)
+                          : '—'}
                       </td>
                       <td className="py-3 px-2 text-center font-bold text-slate-900">{it.quantity}</td>
                       <td className="py-3 px-3 text-slate-700">
                         {selectedSlip.type === 'exchange' ? 'Đổi hàng' : 'Trả hàng'}
                       </td>
                       <td className="py-3 px-3 text-slate-700">
-                        {exItem?.product_name || (selectedSlip.type === 'exchange' ? 'Sữa TH true MILK 180 ml' : '—')}
+                        {exItem?.product_name || '—'}
                       </td>
                       <td className="py-3 px-2 text-center font-bold text-primary">
-                        {selectedSlip.type === 'exchange' ? 18 : '—'}
+                        {exItem ? availableExchangeStock(selectedSlip, exItem.product_barcode) : '—'}
                       </td>
-                      <td className="py-3 px-3 text-slate-600">Vỏ hộp bị móp</td>
+                      <td className="py-3 px-3 text-slate-600">{selectedSlip.reason || '—'}</td>
                     </tr>
                   );
                 })}
@@ -1440,14 +1548,7 @@ export const ReturnsPage: React.FC = () => {
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
           <h2 className="font-bold text-slate-800 text-sm">Lịch sử chỉnh sửa</h2>
           <div className="space-y-2">
-            {(editHistories[selectedSlip.id] || [
-              {
-                id: 'default',
-                time: '05/11/2026 · 10:10',
-                author: selectedSlip.creator_name,
-                description: `Tạo phiếu đổi trả · ${selectedSlip.items.length} sản phẩm, tổng số lượng ${totalQty || 5}`,
-              },
-            ]).map((h) => (
+            {histories.map((h) => (
               <div
                 key={h.id}
                 className="flex flex-col sm:flex-row sm:items-center justify-between text-xs py-1.5 border-b border-slate-100 last:border-0"
@@ -1633,10 +1734,7 @@ export const ReturnsPage: React.FC = () => {
                       <tr key={s.id} className="hover:bg-slate-50/60 transition-colors">
                         <td className="py-3.5 px-4">
                           <button
-                            onClick={() => {
-                              setSelectedSlip(s);
-                              setMode('detail');
-                            }}
+                            onClick={() => handleViewSlip(s)}
                             className="font-mono font-bold text-[var(--color-primary)] hover:underline"
                           >
                             {s.code}
@@ -1661,7 +1759,7 @@ export const ReturnsPage: React.FC = () => {
                         )}
                         {!isOwner && (
                           <td className="py-3.5 px-4 text-center font-semibold text-slate-800">
-                            {itemsCount || 2}
+                            {itemsCount}
                           </td>
                         )}
                         <td className="py-3.5 px-4 text-center">
@@ -1677,10 +1775,7 @@ export const ReturnsPage: React.FC = () => {
                         </td>
                         <td className="py-3.5 px-4 text-center">
                           <button
-                            onClick={() => {
-                              setSelectedSlip(s);
-                              setMode('detail');
-                            }}
+                            onClick={() => handleViewSlip(s)}
                             className="text-[var(--color-primary)] hover:underline text-xs font-medium"
                           >
                             {isOwner ? 'Xem' : 'Xem chi tiết'}
@@ -1705,7 +1800,7 @@ export const ReturnsPage: React.FC = () => {
           {/* Phân trang chuẩn Figma: Hiển thị 1–8 trong 36 phiếu đổi trả  8 dòng / trang  < 1 2 3 ... 5 > */}
           <div className="px-5 py-3.5 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-white text-xs text-slate-500">
             <span>
-              Hiển thị {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filteredSlips.length)} trong {filteredSlips.length || 36} phiếu đổi trả
+              Hiển thị {filteredSlips.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filteredSlips.length)} trong {filteredSlips.length} phiếu đổi trả
             </span>
 
             <div className="flex items-center gap-4">

@@ -2,24 +2,18 @@ import { z } from 'zod';
 
 const nonEmptyString = (label: string) =>
   z.string().trim().min(1, `${label} không được để trống.`);
-const categoryCode = nonEmptyString('Mã danh mục').regex(
-  /^DM\d{3}$/,
-  'Mã danh mục phải có dạng DM và 3 chữ số.',
-);
-
 const categoryFields = {
-  code: categoryCode.optional(),
   name: nonEmptyString('Tên danh mục'),
   description: z.string().trim().optional(),
 };
 
-export const categoryCreateSchema = z.object(categoryFields);
+export const categoryCreateSchema = z.object(categoryFields).strict();
 export const categoryUpdateSchema = z
   .object({
-    code: categoryFields.code.optional(),
     name: categoryFields.name.optional(),
     description: categoryFields.description,
   })
+  .strict()
   .refine((value) => Object.keys(value).length > 0, 'Vui lòng cung cấp thông tin cần cập nhật.');
 
 const positivePrice = z.coerce.number().finite().positive('Giá bán phải là số lớn hơn 0.');
@@ -30,8 +24,26 @@ const zeroOpeningStock = z.coerce.number().int().refine(
   'Tồn kho ban đầu phải bằng 0; hãy sử dụng phiếu nhập hàng.',
 );
 
+const productImageUrl = z
+  .string()
+  .trim()
+  .refine(
+    (value) => {
+      if (!value) return true;
+      try {
+        const parsed = new URL(value);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    'Đường dẫn ảnh phải là URL hợp lệ bắt đầu bằng http:// hoặc https://.'
+  )
+  .optional()
+  .or(z.literal(''));
+
 export const productCreateSchema = z.object({
-  barcode: z.string().trim().regex(/^\d{13}$/, 'Mã vạch sản phẩm phải gồm đúng 13 chữ số.'),
+  barcode: z.string().trim().regex(/^\d{13}$/, 'Mã vạch phải gồm đúng 13 chữ số.'),
   name: nonEmptyString('Tên sản phẩm'),
   category_id: z.string().uuid('Danh mục không hợp lệ.'),
   category_name: z.string().trim().optional(),
@@ -40,11 +52,12 @@ export const productCreateSchema = z.object({
   unit: nonEmptyString('Đơn vị tính'),
   stock_quantity: zeroOpeningStock.optional(),
   min_stock: nonnegativeInteger.default(0),
-  image_url: z.string().trim().url('Đường dẫn ảnh không hợp lệ.').optional().or(z.literal('')),
+  image_url: productImageUrl,
 });
 
 export const productUpdateSchema = z
   .object({
+    barcode: z.string().trim().regex(/^\d{13}$/, 'Mã vạch phải gồm đúng 13 chữ số.').optional(),
     name: nonEmptyString('Tên sản phẩm').optional(),
     category_id: z.string().uuid('Danh mục không hợp lệ.').optional(),
     category_name: z.string().trim().optional(),
@@ -53,7 +66,7 @@ export const productUpdateSchema = z
     unit: nonEmptyString('Đơn vị tính').optional(),
     stock_quantity: z.never().optional(),
     min_stock: nonnegativeInteger.optional(),
-    image_url: z.string().trim().url('Đường dẫn ảnh không hợp lệ.').optional().or(z.literal('')),
+    image_url: productImageUrl,
   })
   .refine((value) => Object.keys(value).length > 0, 'Vui lòng cung cấp thông tin cần cập nhật.');
 

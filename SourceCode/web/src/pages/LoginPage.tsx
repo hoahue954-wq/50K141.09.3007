@@ -14,6 +14,14 @@ export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { showSuccess } = useToast();
 
+  React.useEffect(() => {
+    const expiredMsg = sessionStorage.getItem('th_hang_session_expired');
+    if (expiredMsg) {
+      setErrorMsg(expiredMsg);
+      sessionStorage.removeItem('th_hang_session_expired');
+    }
+  }, []);
+
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!username.trim()) {
@@ -127,7 +135,7 @@ export const LoginPage: React.FC = () => {
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
-            {errorMsg && username.trim() && (
+            {errorMsg && (
               <div className="p-3.5 bg-danger-soft border border-danger/25 rounded-lg text-danger text-xs font-semibold flex items-center gap-2" role="alert">
                 <span className="w-4 h-4 rounded-full border border-danger flex items-center justify-center shrink-0 text-[10px]">!</span>
                 <span>{errorMsg}</span>

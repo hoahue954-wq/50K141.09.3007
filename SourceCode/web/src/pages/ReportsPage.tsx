@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { formatVND, formatDate } from '../utils/format';
 import {
@@ -12,6 +12,7 @@ import {
   Package,
   Receipt,
   AlertCircle,
+  CheckCircle,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -42,8 +43,8 @@ export const ReportsPage: React.FC = () => {
 
   // Doanh thu filters
   const [revenuePeriod, setRevenuePeriod] = useState<RevenuePeriod>('today');
-  const [fromDate, setFromDate] = useState(formatDate(new Date()));
-  const [toDate, setToDate] = useState(formatDate(new Date()));
+  const [fromDate, setFromDate] = useState(() => formatDate(new Date()));
+  const [toDate, setToDate] = useState(() => formatDate(new Date()));
 
   // Lợi nhuận filters
   const [profitPeriod, setProfitPeriod] = useState<ProfitPeriod>('this_month');
@@ -58,98 +59,194 @@ export const ReportsPage: React.FC = () => {
   const targetMonth = profitPeriod === 'this_month' ? currentMonth : currentMonth === 1 ? 12 : currentMonth - 1;
   const targetYear = profitPeriod === 'this_month' ? currentYear : currentMonth === 1 ? currentYear - 1 : currentYear;
 
-  // Query dữ liệu doanh thu ngày
+  const todayApiStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+
+  const getEffectiveRange = () => {
+    if (revenuePeriod === 'today') {
+      return { from: todayApiStr, to: todayApiStr, groupBy: 'day' as const };
+    }
+    if (revenuePeriod === '7days') {
+      const d = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+      const from7 = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d);
+      return { from: from7, to: todayApiStr, groupBy: 'day' as const };
+    }
+    if (revenuePeriod === 'month') {
+      const firstDay = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`;
+      const lastDayNum = new Date(Date.UTC(currentYear, currentMonth, 0)).getUTCDate();
+      const lastDay = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(lastDayNum).padStart(2, '0')}`;
+      return { from: firstDay, to: lastDay, groupBy: 'day' as const };
+    }
+    const f = fromDate.includes('/') ? fromDate.split('/').reverse().join('-') : fromDate || todayApiStr;
+    const t = toDate.includes('/') ? toDate.split('/').reverse().join('-') : toDate || todayApiStr;
+    return { from: f, to: t, groupBy: 'day' as const };
+  };
+
+  const { from: queryFrom, to: queryTo, groupBy: queryGroupBy } = getEffectiveRange();
+
+  // Query dữ liệu doanh thu từ API
   const {
-    data: dailyReport,
-    isLoading: isDailyLoading,
-    isError: isDailyError,
-    error: dailyError,
-    refetch: refetchDaily,
+    data: revenueReport,
+    refetch: refetchRevenue,
   } = useQuery({
-    queryKey: ['daily-report', fromDate],
-    queryFn: () => api.reports.getDailyReport(fromDate),
+    queryKey: ['revenue-report', queryFrom, queryTo, queryGroupBy],
+    queryFn: () => api.reports.getRevenueReport(queryFrom, queryTo, queryGroupBy),
   });
 
-  // Query dữ liệu lợi nhuận tháng
+  // Query dữ liệu doanh thu ngày (để lấy danh sách đơn & sản phẩm)
+  const {
+    data: dailyReport,
+    refetch: refetchDaily,
+  } = useQuery({
+    queryKey: ['daily-report', queryFrom],
+    queryFn: () => api.reports.getDailyReport(queryFrom),
+  });
+
+  // Query dữ liệu lợi nhuận tháng từ API
   const {
     data: monthlyReport,
-    isLoading: isMonthlyLoading,
-    isError: isMonthlyError,
-    error: monthlyError,
     refetch: refetchMonthly,
   } = useQuery({
     queryKey: ['monthly-report', targetYear, targetMonth],
     queryFn: () => api.reports.getMonthlyReport(targetYear, targetMonth),
   });
 
-  const handleUploadExcel = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!excelFile) {
-      showError('Vui lòng chọn tệp Excel để nhập chi phí.');
-      return;
-    }
-    showSuccess('Nhập dữ liệu chi phí từ Excel thành công!');
-    setExcelFile(null);
-  };
+  // Query chi tiết lợi nhuận từng ngày từ API profit
+  const profitFrom = `${targetYear}-${String(targetMonth).padStart(2, '0')}-01`;
+  const profitLastDayNum = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  const profitTo = `${targetYear}-${String(targetMonth).padStart(2, '0')}-${String(profitLastDayNum).padStart(2, '0')}`;
 
-  // Dữ liệu doanh thu theo từng chế độ lọc Figma
-  const monthlyRevenueDays = Array.from({ length: 31 }, (_, i) => {
-    const day = (i + 1).toString().padStart(2, '0');
-    const isPeak = day === '12' || day === '25';
-    // Sinh số liệu dao động từ 2.5tr đến 4.2tr
-    const baseVal = 2500000 + ((i * 73) % 1500000);
-    const value = isPeak ? 4200000 : baseVal;
-    return { time: day, value, isPeak };
+  const {
+    data: profitReport,
+  } = useQuery({
+    queryKey: ['profit-report', profitFrom, profitTo],
+    queryFn: () => api.reports.getProfitReport(profitFrom, profitTo, 'day'),
   });
 
-  const customRangeRevenueData = [
-    { time: '01/11', value: 2510000, label: '2,51 tr', isPeak: false },
-    { time: '02/11', value: 2710000, label: '2,71 tr', isPeak: true },
-    { time: '03/11', value: 2640000, label: '2,64 tr', isPeak: false },
-  ];
+  const queryClient = useQueryClient();
+  const [excelError, setExcelError] = useState<string | null>(null);
+  const [excelSuccess, setExcelSuccess] = useState<string | null>(null);
 
-  const hourlyRevenueData = [
-    { time: '06h', value: 350000, isPeak: false },
-    { time: '08h', value: 720000, isPeak: false },
-    { time: '10h', value: 1450000, isPeak: false },
-    { time: '12h', value: 1200000, isPeak: false },
-    { time: '14h', value: 890000, isPeak: false },
-    { time: '16h', value: 1650000, isPeak: false },
-    { time: '18h', value: 2100000, isPeak: false },
-    { time: '20h', value: 2850000, isPeak: true },
-  ];
+  const importMutation = useMutation({
+    mutationFn: async () => {
+      if (!excelFile) {
+        throw new Error('Vui lòng chọn tệp Excel để nhập chi phí.');
+      }
+      if (!excelFile.name.toLowerCase().endsWith('.xlsx')) {
+        throw new Error('File Excel không hợp lệ, vui lòng kiểm tra lại!');
+      }
+      if (costMonth) {
+        const parts = costMonth.includes('/') ? costMonth.split('/') : costMonth.split('-');
+        let m = Number(parts[0]);
+        let y = Number(parts[1]);
+        if (parts[0] && parts[0].length === 4) {
+          y = Number(parts[0]);
+          m = Number(parts[1]);
+        } else if (y < 100) {
+          y = 2000 + y;
+        }
+        if (!isNaN(m) && !isNaN(y)) {
+          if (y > currentYear || (y === currentYear && m > currentMonth)) {
+            throw new Error('Tháng lựa chọn không hợp lệ, vui lòng chọn lại!');
+          }
+        }
+      }
+      return api.reports.importExpenses(excelFile, costMonth.trim() || undefined);
+    },
+    onSuccess: (data) => {
+      setExcelError(null);
+      setExcelSuccess(data.message || 'Nhập chi phí thành công');
+      showSuccess(data.message || 'Nhập dữ liệu chi phí từ Excel thành công!');
+      setExcelFile(null);
+      queryClient.invalidateQueries({ queryKey: ['monthly-report'] });
+      queryClient.invalidateQueries({ queryKey: ['profit-report'] });
+      queryClient.invalidateQueries({ queryKey: ['revenue-report'] });
+    },
+    onError: (err: any) => {
+      setExcelSuccess(null);
+      setExcelError(err.message);
+      showError(err.message);
+    },
+  });
 
-  const currentRevenueData =
-    revenuePeriod === 'month'
-      ? monthlyRevenueDays
-      : revenuePeriod === 'custom' || revenuePeriod === '7days'
-      ? customRangeRevenueData
-      : hourlyRevenueData;
+  const handleUploadExcel = (e: React.FormEvent) => {
+    e.preventDefault();
+    setExcelError(null);
+    setExcelSuccess(null);
+    importMutation.mutate();
+  };
 
-  const currentRevenueStats =
-    revenuePeriod === 'month'
-      ? { total: 80380000, orders: 503, items: 1609 }
-      : revenuePeriod === 'custom' || revenuePeriod === '7days'
-      ? { total: 7860000, orders: 51, items: 98 }
-      : { total: 3800000, orders: 25, items: 76 };
+  // Tính toán số liệu thống kê thực tế từ API (không hardcode)
+  const totalRevenueVal = revenueReport?.summary?.total_revenue ?? (revenuePeriod === 'today' ? (dailyReport?.totalRevenue ?? 0) : 0);
+  const totalOrdersVal = revenueReport?.summary?.invoice_count ?? (revenuePeriod === 'today' ? (dailyReport?.invoices?.length ?? 0) : 0);
+  const totalItemsVal = revenuePeriod === 'today'
+    ? (dailyReport?.invoices ?? []).reduce((sum, inv) => sum + (inv.items ?? []).reduce((s, it) => s + it.quantity, 0), 0)
+    : (monthlyReport?.soldProducts ?? []).reduce((sum, p) => sum + p.quantity, 0);
 
-  const profitValues = [
-    480000, 720000, 950000, 520000, 810000, 420000, 680000, 450000, 780000,
-    890000, 580000, 920000, 610000, 750000, 980000, 650000, 830000, 510000,
-    740000, 860000, 590000, 910000, 630000, 790000, 940000, 670000, 820000,
-    540000, 760000, 690000, 980000,
-  ];
-  const highestProfit = Math.max(...profitValues);
-  const dailyProfitData = profitValues.map((profit, i) => ({
-    day: (i + 1).toString().padStart(2, '0'),
-    profit,
-    isPeak: profit === highestProfit,
+  const currentRevenueStats = {
+    total: totalRevenueVal,
+    orders: totalOrdersVal,
+    items: totalItemsVal,
+  };
+
+  // Dữ liệu biểu đồ doanh thu từ API
+  const rawRevenueData = (revenueReport?.data ?? []).map((item) => {
+    const label = revenuePeriod === 'month' ? item.period.slice(-2) : item.period.slice(5).replace('-', '/');
+    return {
+      time: label,
+      value: item.revenue,
+      isPeak: false,
+    };
+  });
+  const maxRevenue = Math.max(0, ...rawRevenueData.map((d) => d.value));
+  const currentRevenueData = rawRevenueData.map((d) => ({
+    ...d,
+    isPeak: maxRevenue > 0 && d.value === maxRevenue,
   }));
 
-  const monthlyRevenue = monthlyReport?.totalRevenue || 84000000;
-  const monthlyExpenses = monthlyReport?.totalExpenses || 7000000;
-  const monthlyCost = 56000000;
-  const monthlyProfit = monthlyReport?.netProfit || 21000000;
+  // Dữ liệu lợi nhuận từng ngày từ API
+  const rawProfitData = (profitReport?.data ?? []).map((item) => ({
+    day: item.period.slice(-2),
+    profit: item.net_profit,
+    isPeak: false,
+  }));
+  const maxProfit = Math.max(0, ...rawProfitData.map((d) => d.profit));
+  const dailyProfitData = rawProfitData.map((d) => ({
+    ...d,
+    isPeak: maxProfit > 0 && d.profit === maxProfit,
+  }));
+
+  const monthlyRevenue = monthlyReport?.totalRevenue ?? profitReport?.summary?.revenue ?? 0;
+  const monthlyExpenses = monthlyReport?.totalExpenses ?? profitReport?.summary?.expenses ?? 0;
+  const monthlyCost = profitReport?.summary?.cost_of_goods_sold ?? 0;
+  const monthlyProfit = monthlyReport?.netProfit ?? profitReport?.summary?.net_profit ?? 0;
+
+  const handleSelectPeriod = (period: RevenuePeriod) => {
+    setRevenuePeriod(period);
+    if (period === 'today') {
+      const todayFormatted = formatDate(new Date());
+      setFromDate(todayFormatted);
+      setToDate(todayFormatted);
+    } else if (period === '7days') {
+      const d = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+      setFromDate(formatDate(d));
+      setToDate(formatDate(new Date()));
+    } else if (period === 'month') {
+      const first = new Date(currentYear, currentMonth - 1, 1);
+      const last = new Date(currentYear, currentMonth, 0);
+      setFromDate(formatDate(first));
+      setToDate(formatDate(last));
+    }
+  };
 
   return (
     <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-6">
@@ -182,7 +279,7 @@ export const ReportsPage: React.FC = () => {
                 ).map((t) => (
                   <button
                     key={t.id}
-                    onClick={() => setRevenuePeriod(t.id)}
+                    onClick={() => handleSelectPeriod(t.id)}
                     className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
                       revenuePeriod === t.id
                         ? 'bg-highlight text-[var(--color-primary)] font-bold border border-[var(--border)]'
@@ -203,7 +300,7 @@ export const ReportsPage: React.FC = () => {
                   <div className="relative">
                     <input
                       type="text"
-                      value="Tháng 10, 2026"
+                      value={`Tháng ${currentMonth}, ${currentYear}`}
                       readOnly
                       className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none bg-white text-slate-800"
                     />
@@ -213,7 +310,10 @@ export const ReportsPage: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => refetchDaily()}
+                  onClick={() => {
+                    refetchRevenue();
+                    refetchDaily();
+                  }}
                   className="w-full sm:w-auto px-6 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-sm font-medium rounded-lg shadow-sm"
                 >
                   Xem báo cáo
@@ -226,7 +326,7 @@ export const ReportsPage: React.FC = () => {
                   <div className="relative">
                     <input
                       type="text"
-                      value={revenuePeriod === 'today' ? '04/12/2026' : '01/11/2026'}
+                      value={fromDate}
                       onChange={(e) => setFromDate(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
                     />
@@ -239,7 +339,7 @@ export const ReportsPage: React.FC = () => {
                   <div className="relative">
                     <input
                       type="text"
-                      value={revenuePeriod === 'today' ? '04/12/2026' : '03/11/2026'}
+                      value={toDate}
                       onChange={(e) => setToDate(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
                     />
@@ -249,7 +349,10 @@ export const ReportsPage: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => refetchDaily()}
+                  onClick={() => {
+                    refetchRevenue();
+                    refetchDaily();
+                  }}
                   className="w-full sm:w-auto px-6 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-sm font-medium rounded-lg shadow-sm"
                 >
                   Xem báo cáo
@@ -306,32 +409,39 @@ export const ReportsPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="h-80 w-full pt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={currentRevenueData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                  <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} tickLine={false} />
-                  <YAxis
-                    stroke="var(--text-muted)"
-                    fontSize={12}
-                    tickLine={false}
-                    tickFormatter={(val) => `${(val / 1000000).toFixed(val >= 1000000 ? 1 : 2).replace('.0', '')} tr`}
-                  />
-                  <Tooltip
-                    formatter={(value: any) => [formatVND(Number(value) || 0), 'Doanh thu']}
-                    labelFormatter={(label) => `Thời gian: ${label}`}
-                  />
-                  <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={revenuePeriod === 'month' ? 18 : 45}>
-                    {currentRevenueData.map((entry, index) => (
-                      <Cell
-                        key={`cell-${index}`}
-                        fill={entry.isPeak ? 'var(--color-primary)' : 'var(--color-primary-soft)'}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {currentRevenueData.length === 0 || maxRevenue === 0 ? (
+              <div className="h-80 w-full flex flex-col items-center justify-center text-slate-400 text-sm gap-2">
+                <AlertCircle className="w-8 h-8 text-slate-300" />
+                <p>Chưa có dữ liệu doanh thu trong khoảng thời gian này.</p>
+              </div>
+            ) : (
+              <div className="h-80 w-full pt-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={currentRevenueData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="time" stroke="var(--text-muted)" fontSize={11} tickLine={false} />
+                    <YAxis
+                      stroke="var(--text-muted)"
+                      fontSize={12}
+                      tickLine={false}
+                      tickFormatter={(val) => `${(val / 1000000).toFixed(val >= 1000000 ? 1 : 2).replace('.0', '')} tr`}
+                    />
+                    <Tooltip
+                      formatter={(value: any) => [formatVND(Number(value) || 0), 'Doanh thu']}
+                      labelFormatter={(label) => `Thời gian: ${label}`}
+                    />
+                    <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={revenuePeriod === 'month' ? 18 : 45}>
+                      {currentRevenueData.map((entry, index) => (
+                        <Cell
+                          key={`cell-${index}`}
+                          fill={entry.isPeak ? 'var(--color-primary)' : 'var(--color-primary-soft)'}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -344,35 +454,66 @@ export const ReportsPage: React.FC = () => {
           {/* Card 1: Nhập dữ liệu chi phí từ Excel */}
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
             <h2 className="text-sm font-bold text-slate-800">Nhập dữ liệu chi phí</h2>
-            <form onSubmit={handleUploadExcel} className="flex flex-col sm:flex-row gap-3">
-              <input
-                type="text"
-                value={costMonth}
-                onChange={(e) => setCostMonth(e.target.value)}
-                placeholder="mm/yy"
-                className="w-full sm:w-32 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
-              />
+            <form onSubmit={handleUploadExcel} className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="relative w-full sm:w-36">
+                  <input
+                    type="text"
+                    value={costMonth}
+                    onChange={(e) => {
+                      setCostMonth(e.target.value);
+                      setExcelError(null);
+                    }}
+                    placeholder="mm/yy"
+                    className="w-full pl-3 pr-8 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                  />
+                  <Calendar className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
+                </div>
 
-              <label className="flex-1 border border-slate-200 rounded-lg px-3 py-2 flex items-center justify-between text-xs text-slate-500 cursor-pointer hover:bg-slate-50">
-                <span className="truncate">
-                  {excelFile ? excelFile.name : 'Kéo thả file Excel hoặc chọn tệp để nhập dữ liệu chi phí'}
-                </span>
-                <Upload className="w-4 h-4 text-slate-400 ml-2 flex-shrink-0" />
-                <input
-                  type="file"
-                  accept=".xlsx,.xls,.csv"
-                  className="hidden"
-                  onChange={(e) => setExcelFile(e.target.files?.[0] || null)}
-                />
-              </label>
+                <label className={`flex-1 border rounded-lg px-3 py-2 flex items-center justify-between text-xs cursor-pointer transition-colors ${
+                  excelError
+                    ? 'border-red-300 bg-red-50/20 text-red-600'
+                    : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                }`}>
+                  <span className="truncate">
+                    {excelFile ? `${excelFile.name} • ${Math.round(excelFile.size / 1024)} KB` : 'Kéo thả file Excel hoặc chọn tệp để nhập dữ liệu chi phí'}
+                  </span>
+                  <Upload className="w-4 h-4 text-slate-400 ml-2 flex-shrink-0" />
+                  <input
+                    type="file"
+                    accept=".xlsx"
+                    className="hidden"
+                    onChange={(e) => {
+                      setExcelFile(e.target.files?.[0] || null);
+                      setExcelError(null);
+                      setExcelSuccess(null);
+                    }}
+                  />
+                </label>
 
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center gap-1.5 px-5 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-sm font-medium rounded-lg shadow-sm"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                Nhập Excel
-              </button>
+                <button
+                  type="submit"
+                  disabled={importMutation.isPending}
+                  className="inline-flex items-center justify-center gap-1.5 px-5 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white text-sm font-medium rounded-lg shadow-sm disabled:opacity-50"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  {importMutation.isPending ? 'Đang nhập...' : 'Nhập Excel'}
+                </button>
+              </div>
+
+              {excelError && (
+                <div className="flex items-start gap-1.5 text-xs text-red-500 font-medium pt-1">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span className="whitespace-pre-line">{excelError}</span>
+                </div>
+              )}
+
+              {excelSuccess && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium pt-1">
+                  <CheckCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{excelSuccess}</span>
+                </div>
+              )}
             </form>
           </div>
 
@@ -429,18 +570,27 @@ export const ReportsPage: React.FC = () => {
                 Xem báo cáo
               </button>
             </div>
+
+            {monthlyExpenses === 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-red-500 font-medium pt-1">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>Chưa có dữ liệu chi phí của tháng này, vui lòng nhập chi phí!</span>
+              </div>
+            )}
           </div>
 
           {/* 4 Thẻ thống kê Lợi nhuận Figma */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Card 1: Tổng lợi nhuận */}
             <div className="bg-highlight rounded-xl border border-[var(--border)] p-5">
-              <p className="text-xs text-slate-600 font-medium">Tổng lợi nhuận</p>
+              <p className="text-xs text-slate-600 font-medium">
+                {monthlyExpenses > 0 ? 'Tổng lợi nhuận' : 'Lợi nhuận tạm tính'}
+              </p>
               <p className="text-2xl font-black text-[var(--color-primary)] mt-1">
                 {formatVND(monthlyProfit)}
               </p>
               <p className="text-[11px] text-slate-500 mt-2">
-                Sau giá vốn và chi phí vận hành
+                {monthlyExpenses > 0 ? 'Sau giá vốn và chi phí vận hành' : 'Chưa trừ chi phí vận hành'}
               </p>
             </div>
 
@@ -473,7 +623,9 @@ export const ReportsPage: React.FC = () => {
                 {formatVND(monthlyExpenses)}
               </p>
               <p className="text-[11px] text-slate-500 mt-2">
-                Nhập từ file Excel • tháng {targetMonth}/{targetYear}
+                {monthlyExpenses > 0
+                  ? `Dữ liệu chi phí Excel • tháng ${targetMonth}/${targetYear}`
+                  : 'Chưa nhập chi phí'}
               </p>
             </div>
           </div>
@@ -488,32 +640,39 @@ export const ReportsPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="h-80 w-full pt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={dailyProfitData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                  <XAxis dataKey="day" stroke="var(--text-muted)" fontSize={11} tickLine={false} />
-                  <YAxis
-                    stroke="var(--text-muted)"
-                    fontSize={12}
-                    tickLine={false}
-                    tickFormatter={(val) => `${(val / 1000000).toFixed(1)} tr`}
-                  />
-                  <Tooltip
-                    formatter={(value: any) => [formatVND(Number(value) || 0), 'Lợi nhuận']}
-                    labelFormatter={(label) => `Ngày ${label}/${targetMonth}`}
-                  />
-                  <Bar dataKey="profit" radius={[3, 3, 0, 0]} maxBarSize={20}>
-                    {dailyProfitData.map((entry, index) => (
-                      <Cell
-                        key={`profit-cell-${index}`}
-                        fill={entry.isPeak ? 'var(--color-primary)' : 'var(--color-primary-soft)'}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {dailyProfitData.length === 0 || maxProfit === 0 ? (
+              <div className="h-80 w-full flex flex-col items-center justify-center text-slate-400 text-sm gap-2">
+                <AlertCircle className="w-8 h-8 text-slate-300" />
+                <p>Chưa có dữ liệu lợi nhuận trong tháng này.</p>
+              </div>
+            ) : (
+              <div className="h-80 w-full pt-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dailyProfitData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="day" stroke="var(--text-muted)" fontSize={11} tickLine={false} />
+                    <YAxis
+                      stroke="var(--text-muted)"
+                      fontSize={12}
+                      tickLine={false}
+                      tickFormatter={(val) => `${(val / 1000000).toFixed(1)} tr`}
+                    />
+                    <Tooltip
+                      formatter={(value: any) => [formatVND(Number(value) || 0), 'Lợi nhuận']}
+                      labelFormatter={(label) => `Ngày ${label}/${targetMonth}`}
+                    />
+                    <Bar dataKey="profit" radius={[3, 3, 0, 0]} maxBarSize={20}>
+                      {dailyProfitData.map((entry, index) => (
+                        <Cell
+                          key={`profit-cell-${index}`}
+                          fill={entry.isPeak ? 'var(--color-primary)' : 'var(--color-primary-soft)'}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
         </div>
       )}

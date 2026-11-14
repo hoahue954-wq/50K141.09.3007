@@ -92,7 +92,7 @@ test('serialized concurrent debt payments cannot exceed the remaining balance', 
   let outstanding = new Prisma.Decimal(100);
   let previous = Promise.resolve();
   const pay = async (amount: Prisma.Decimal) => {
-    let release = () => {};
+    let release = () => { };
     const turn = previous;
     previous = new Promise<void>((resolve) => { release = resolve; });
     await turn;
@@ -255,6 +255,7 @@ test('revenue and profit reports use HCMC calendar dates and saved cost snapshot
     id: 'invoice',
     code: 'BH000001',
     createdAt: new Date('2026-03-10T16:30:00.000Z'),
+    paidAt: new Date('2026-03-10T16:30:00.000Z'),
     totalAmount: new Prisma.Decimal(20),
     paymentMethod: 'CASH',
     details: [{
@@ -289,8 +290,8 @@ test('revenue and profit reports use HCMC calendar dates and saved cost snapshot
     to: '2026-03-10',
     group_by: 'day',
   });
-  assert.equal(daily.summary.total_revenue, 10);
-  assert.equal(daily.data[0]?.payment_methods.cash, 10);
+  assert.equal(daily.summary.total_revenue, 20);
+  assert.equal(daily.data[0]?.payment_methods.cash, 20);
   assert.equal(daily.summary.invoice_count, 1);
 
   const dailyProfit = await reportService.profit({
@@ -298,8 +299,8 @@ test('revenue and profit reports use HCMC calendar dates and saved cost snapshot
     to: '2026-03-10',
     group_by: 'day',
   });
-  assert.equal(dailyProfit.summary.gross_profit, 5);
-  assert.equal(dailyProfit.summary.net_profit, 5);
+  assert.equal(dailyProfit.summary.gross_profit, 15);
+  assert.equal(dailyProfit.summary.net_profit, 15);
 
   const monthly = await reportService.profit({
     from: '2026-03-01',
@@ -310,7 +311,7 @@ test('revenue and profit reports use HCMC calendar dates and saved cost snapshot
   assert.equal(monthly.summary.returned_cost, 3);
   assert.equal(monthly.summary.disposal_cost, 2);
   assert.equal(monthly.summary.expenses, 1);
-  assert.equal(monthly.summary.net_profit, 4);
+  assert.equal(monthly.summary.net_profit, 14);
 });
 
 test('empty report range returns zero-valued periods without errors', async () => {
@@ -335,6 +336,10 @@ test('sales report query excludes soft-deleted invoices', () => {
 
   assert.deepEqual(activeSalesWhere(from, to), {
     isDeleted: false,
-    createdAt: { gte: from, lt: to },
+    status: 'PAID',
+    OR: [
+      { paidAt: { gte: from, lt: to } },
+      { paidAt: null, createdAt: { gte: from, lt: to } },
+    ],
   });
 });

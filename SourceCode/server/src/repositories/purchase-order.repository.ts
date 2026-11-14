@@ -98,14 +98,16 @@ export const purchaseOrderRepository = {
           note: input.note,
           totalAmount: input.totalAmount,
           items: {
-            create: input.items.map((item) => ({
-              productId: item.productId,
-              productBarcode: item.productBarcode,
-              productName: item.productName,
-              quantity: item.quantity,
-              importPrice: item.importPrice,
-              lineTotal: item.lineTotal,
-            })),
+            createMany: {
+              data: input.items.map((item) => ({
+                productId: item.productId,
+                productBarcode: item.productBarcode,
+                productName: item.productName,
+                quantity: item.quantity,
+                importPrice: item.importPrice,
+                lineTotal: item.lineTotal,
+              })),
+            },
           },
         },
         include: purchaseOrderInclude,
@@ -121,7 +123,14 @@ export const purchaseOrderRepository = {
         },
       });
       return order;
-    }, { maxWait: 20000, timeout: 120000 });
+    }, { maxWait: 5000, timeout: 30000 });
+  },
+
+  async findByCode(code: string): Promise<PurchaseOrderRecord | null> {
+    return prisma.purchaseOrder.findUnique({
+      where: { code },
+      include: purchaseOrderInclude,
+    });
   },
 
   async findMany(options: {

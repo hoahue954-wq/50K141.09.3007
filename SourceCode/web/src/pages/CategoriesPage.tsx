@@ -92,7 +92,6 @@ export const CategoriesPage: React.FC = () => {
         });
       } else {
         return api.categories.create({
-          code: code.trim(),
           name: name.trim(),
           description: description.trim(),
         });
