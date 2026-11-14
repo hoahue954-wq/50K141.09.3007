@@ -48,17 +48,16 @@ const OwnerOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   }
 
   if (!isOwner) {
-    // Nhân viên không có quyền truy cập màn hình này -> điều hướng về POS
-    return <Navigate to="/pos" replace />;
+    // Nhân viên không có quyền truy cập màn hình này -> điều hướng về trang chủ Tổng quan
+    return <Navigate to="/" replace />;
   }
 
   return <>{children}</>;
 };
 
-// Trang chủ điều hướng theo vai trò (Chủ vào Dashboard, Nhân viên vào POS)
+// Trang chủ điều hướng vào Tổng quan cho cả Chủ và Nhân viên (theo phân quyền)
 const HomeIndexRoute: React.FC = () => {
-  const { isOwner } = useAuth();
-  return isOwner ? <DashboardPage /> : <Navigate to="/pos" replace />;
+  return <DashboardPage />;
 };
 
 export const AppRoutes: React.FC = () => {

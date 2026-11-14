@@ -353,6 +353,18 @@ export const invoiceRepository = {
     return { aggregate, count };
   },
 
+  async staffRecentInvoices(userId: string, limit = 25) {
+    return prisma.invoice.findMany({
+      where: {
+        createdById: userId,
+        isDeleted: false,
+      },
+      include: invoiceInclude,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+  },
+
   async topSellingProducts(start: Date, end: Date) {
     const grouped = await prisma.invoiceDetail.groupBy({
       by: ['productId', 'productBarcode', 'productName'],
