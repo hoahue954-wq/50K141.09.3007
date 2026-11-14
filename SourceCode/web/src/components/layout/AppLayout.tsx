@@ -7,10 +7,12 @@ import {
   ShoppingCart,
   Receipt,
   Package,
+  Folder,
   FolderTree,
   Truck,
   Warehouse,
   ArrowLeftRight,
+  PackageX,
   RotateCcw,
   BarChart3,
   TrendingUp,
@@ -149,7 +151,7 @@ export const AppLayout: React.FC = () => {
           >
             {({ isActive }) => (
               <>
-                <FolderTree className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
+                <Folder className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
                 <span>Danh mục sản phẩm</span>
               </>
             )}
@@ -246,7 +248,7 @@ export const AppLayout: React.FC = () => {
           >
             {({ isActive }) => (
               <>
-                <RotateCcw className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
+                <PackageX className={`w-5 h-5 ${isActive ? 'text-[var(--color-primary)]' : 'text-white'}`} />
                 <span>Đổi/trả hàng</span>
               </>
             )}
@@ -261,7 +263,7 @@ export const AppLayout: React.FC = () => {
                 className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors text-white/85 hover:bg-white/10 hover:text-white"
               >
                 <div className="flex items-center gap-3">
-                  <BarChart3 className="w-5 h-5 text-white" />
+                  <TrendingUp className="w-5 h-5 text-white" />
                   <span>Báo cáo</span>
                 </div>
                 {isReportSubmenuOpen ? (
@@ -404,17 +406,17 @@ export const AppLayout: React.FC = () => {
                   { to: '/', label: 'Tổng quan', icon: <LayoutDashboard className="w-5 h-5" /> },
                   { to: '/pos', label: 'Bán hàng', icon: <ShoppingCart className="w-5 h-5" /> },
                   { to: '/products', label: 'Sản phẩm', icon: <Package className="w-5 h-5" /> },
-                  { to: '/categories', label: 'Danh mục sản phẩm', icon: <FolderTree className="w-5 h-5" /> },
+                  { to: '/categories', label: 'Danh mục sản phẩm', icon: <Folder className="w-5 h-5" /> },
                   { to: '/purchase-orders', label: 'Nhập hàng', icon: <Truck className="w-5 h-5" /> },
                   ...(isOwner
                     ? [{ to: '/inventory', label: 'Kho', icon: <Warehouse className="w-5 h-5" /> }]
                     : []),
                   { to: '/invoices', label: 'Hóa đơn', icon: <Receipt className="w-5 h-5" /> },
                   { to: '/disposals', label: 'Hủy hàng', icon: <ArrowLeftRight className="w-5 h-5" /> },
-                  { to: '/returns', label: 'Đổi/trả hàng', icon: <RotateCcw className="w-5 h-5" /> },
+                  { to: '/returns', label: 'Đổi/trả hàng', icon: <PackageX className="w-5 h-5" /> },
                   ...(isOwner
                     ? [
-                        { to: '/reports?tab=revenue', label: 'Báo cáo doanh thu', icon: <BarChart3 className="w-5 h-5" /> },
+                        { to: '/reports?tab=revenue', label: 'Báo cáo doanh thu', icon: <TrendingUp className="w-5 h-5" /> },
                         { to: '/reports?tab=profit', label: 'Báo cáo lợi nhuận', icon: <TrendingUp className="w-5 h-5" /> },
                         { to: '/expenses', label: 'Chi phí phát sinh', icon: <DollarSign className="w-5 h-5" /> },
                       ]
