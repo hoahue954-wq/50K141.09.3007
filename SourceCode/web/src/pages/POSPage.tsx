@@ -22,6 +22,8 @@ import {
   Check,
   FileText,
   Store,
+  NotebookPen,
+  AlertCircle,
 } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 import { usePOSDraft } from '../context/POSDraftContext';
@@ -37,6 +39,7 @@ export const POSPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCatId, setSelectedCatId] = useState<string>('all');
   const [step, setStep] = useState<'cart' | 'checkout' | 'success'>('cart');
+  const [scanNotFound, setScanNotFound] = useState<string | null>(null);
 
   // Checkout states
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'transfer' | 'debt'>('cash');
@@ -105,8 +108,10 @@ export const POSPage: React.FC = () => {
       if (addToCart(found, 1)) {
         setBarcodeInput('');
         setSearchQuery('');
+        setScanNotFound(null);
       }
     } else {
+      setScanNotFound(code);
       showError(`Mã ${code} · Không tìm thấy sản phẩm!`);
     }
   };
@@ -139,6 +144,7 @@ export const POSPage: React.FC = () => {
     setCashGivenStr('');
     setPaymentMethod('cash');
     setCompletedInvoice(null);
+    setScanNotFound(null);
   };
 
   // Tính tổng tiền
@@ -146,6 +152,23 @@ export const POSPage: React.FC = () => {
     (sum, item) => sum + item.quantity * item.product.selling_price,
     0
   );
+
+  // Format số hàng nghìn có dấu "."
+  const formatNumberWithDots = (val: string | number): string => {
+    if (!val && val !== 0) return '';
+    const numStr = val.toString().replace(/\D/g, '');
+    if (!numStr) return '';
+    return Number(numStr).toLocaleString('vi-VN');
+  };
+
+  const formatCustomerPhone = (phone?: string): string => {
+    if (!phone) return 'Không có SĐT';
+    const clean = phone.trim();
+    if (clean.length >= 9) {
+      return `${clean.slice(0, 4)} ••• ${clean.slice(-3)}`;
+    }
+    return clean;
+  };
 
   const parsedCashGiven = Number(cashGivenStr) || 0;
   const changeAmount = Math.max(0, parsedCashGiven - totalAmount);
@@ -155,7 +178,11 @@ export const POSPage: React.FC = () => {
     if (val === 'backspace') {
       setCashGivenStr((prev) => prev.slice(0, -1));
     } else {
-      setCashGivenStr((prev) => prev + val);
+      setCashGivenStr((prev) => {
+        const next = prev + val;
+        // Bỏ số 0 vô nghĩa ở đầu
+        return next.replace(/^0+(?=\d)/, '');
+      });
     }
   };
 
@@ -258,28 +285,39 @@ export const POSPage: React.FC = () => {
               </button>
 
               {/* Ô tìm kiếm & Ô quét mã vạch */}
-              <form onSubmit={handleBarcodeSubmit} className="flex gap-2">
-                <div className="relative flex-1">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-                  <input
-                    ref={barcodeInputRef}
-                    type="text"
-                    value={barcodeInput}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value);
-                      setBarcodeInput(e.target.value);
-                    }}
-                    placeholder="Tên sản phẩm hoặc quét mã vạch..."
-                    className="ui-input w-full pl-10 pr-4 py-2.5 text-sm focus:border-[var(--color-primary)]"
-                  />
+              <form onSubmit={handleBarcodeSubmit} className="space-y-2">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                    <input
+                      ref={barcodeInputRef}
+                      type="text"
+                      value={barcodeInput}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setBarcodeInput(e.target.value);
+                        if (scanNotFound) setScanNotFound(null);
+                      }}
+                      placeholder="Tên sản phẩm"
+                      className="ui-input w-full pl-10 pr-4 py-2.5 text-sm focus:border-[#024E82]"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="ui-button w-11 h-11 min-h-11 p-0 rounded-lg flex items-center justify-center shrink-0 bg-[#024E82] text-white hover:bg-blue-900"
+                    title="Nhận mã quét"
+                  >
+                    <Barcode className="w-5 h-5" />
+                  </button>
                 </div>
-                <button
-                  type="submit"
-                  className="ui-button ui-button-primary w-11 h-11 min-h-11 p-0 rounded-lg flex items-center justify-center shrink-0"
-                  title="Nhận mã quét"
-                >
-                  <Barcode className="w-5 h-5" />
-                </button>
+
+                {/* Banner báo lỗi khi không tìm thấy mã sản phẩm chuẩn ảnh 49 */}
+                {scanNotFound && (
+                  <div className="flex items-center gap-2 p-2.5 bg-[#FEECEB] border border-red-100 rounded-xl text-xs text-[#E12B2B]">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-[#E12B2B]" />
+                    <span>Mã {scanNotFound} · Không tìm thấy sản phẩm!</span>
+                  </div>
+                )}
               </form>
 
               {/* Bộ lọc Pills danh mục chuẩn Figma */}
@@ -288,8 +326,8 @@ export const POSPage: React.FC = () => {
                   onClick={() => setSelectedCatId('all')}
                   className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                     selectedCatId === 'all'
-                      ? 'bg-[var(--color-primary)] text-white'
-                      : 'bg-primary-soft text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white'
+                      ? 'bg-[#024E82] text-white'
+                      : 'bg-primary-soft text-[#024E82] hover:bg-[#024E82] hover:text-white'
                   }`}
                 >
                   Tất cả
@@ -300,8 +338,8 @@ export const POSPage: React.FC = () => {
                     onClick={() => setSelectedCatId(c.id)}
                     className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
                       selectedCatId === c.id
-                        ? 'bg-[var(--color-primary)] text-white'
-                        : 'bg-[var(--color-primary-soft)] text-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white'
+                        ? 'bg-[#024E82] text-white'
+                        : 'bg-primary-soft text-[#024E82] hover:bg-[#024E82] hover:text-white'
                     }`}
                   >
                     {c.name}
@@ -311,7 +349,7 @@ export const POSPage: React.FC = () => {
 
               {/* Section: Hàng bán thường xuyên (Figma UC 2) */}
               <div className="flex items-center justify-between pt-1">
-                <h3 className="text-sm font-bold text-slate-900">Hàng bán thường xuyên</h3>
+                <h3 className="text-sm font-bold text-[#024E82]">Hàng bán thường xuyên</h3>
                 <span className="text-xs text-slate-400">{filteredProducts.length} mặt hàng</span>
               </div>
 
@@ -323,7 +361,7 @@ export const POSPage: React.FC = () => {
                     type="button"
                     onClick={() => addToCart(p, 1)}
                     disabled={p.stock_quantity <= 0}
-                    className="w-full min-h-[148px] text-left bg-primary-soft p-4 rounded-xl border border-[var(--border)] hover:border-[var(--color-primary)] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer transition-colors flex flex-col justify-between"
+                    className="w-full min-h-[148px] text-left bg-white p-4 rounded-xl border border-slate-200/80 hover:border-[#024E82] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer transition-colors flex flex-col justify-between shadow-2xs"
                   >
                     <div>
                       <div className="flex justify-between text-[11px] text-slate-400 font-mono mb-1">
@@ -335,7 +373,7 @@ export const POSPage: React.FC = () => {
                       </p>
                     </div>
                     <div className="mt-3">
-                      <span className="text-base font-black text-[var(--color-primary)]">
+                      <span className="text-base font-black text-[#024E82]">
                         {formatVND(p.selling_price)}
                       </span>
                     </div>
@@ -347,13 +385,13 @@ export const POSPage: React.FC = () => {
             {/* CỘT PHẢI: GIỎ HÀNG CHUẨN FIGMA UC 2 */}
             <div className="xl:col-span-7 bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col">
               <div className="p-5 border-b border-slate-100">
-                <h2 className="text-lg font-bold text-[var(--color-primary)]">Giỏ hàng</h2>
+                <h2 className="text-lg font-bold text-[#024E82]">Giỏ hàng</h2>
               </div>
 
               {/* Bảng dòng hàng trong giỏ */}
               <div className="overflow-x-auto min-h-[220px] max-h-[min(52vh,460px)] overflow-y-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-primary-soft text-slate-500 font-semibold">
+                  <thead className="bg-[#EEF3F8] text-slate-500 font-medium">
                     <tr>
                       <th className="py-2.5 px-3">Mã SP / Tên sản phẩm</th>
                       <th className="py-2.5 px-2 text-center">ĐVT</th>
@@ -403,7 +441,7 @@ export const POSPage: React.FC = () => {
                         <td className="py-3 px-1 text-center">
                           <button
                             onClick={() => removeFromCart(item.product.barcode)}
-                            className="text-danger hover:bg-danger-soft p-1 rounded"
+                            className="text-red-500 hover:bg-red-50 p-1 rounded"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -421,10 +459,10 @@ export const POSPage: React.FC = () => {
                 </table>
               </div>
 
-              {/* Tổng tiền dùng màu nhấn theo quy ước giao diện */}
-              <div className="p-4 bg-highlight m-4 rounded-xl flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-700">Tổng tiền</span>
-                <span className="text-2xl font-black text-slate-900">{formatVND(totalAmount)}</span>
+              {/* Tổng tiền chuẩn Figma */}
+              <div className="p-4 bg-[#ECF3F9] m-4 rounded-xl flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-800">Tổng tiền</span>
+                <span className="text-2xl font-black text-[#024E82]">{formatVND(totalAmount)}</span>
               </div>
 
               {/* 2 Nút Hủy đơn & Hoàn thành đơn chuẩn Figma */}
@@ -433,7 +471,7 @@ export const POSPage: React.FC = () => {
                   type="button"
                   onClick={handleResetOrder}
                   disabled={cart.length === 0}
-                  className="ui-button py-3 px-4 border border-danger text-danger hover:bg-danger-soft rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 disabled:opacity-40"
+                  className="py-3 px-4 border border-red-300 text-red-600 hover:bg-red-50 bg-white rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 disabled:opacity-40"
                 >
                   <X className="w-4 h-4" />
                   Hủy đơn
@@ -443,7 +481,7 @@ export const POSPage: React.FC = () => {
                   type="button"
                   onClick={() => setStep('checkout')}
                   disabled={cart.length === 0}
-                  className="ui-button py-3 px-4 bg-success bg-success-hover text-white rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-40"
+                  className="py-3 px-4 bg-[#24963E] hover:bg-emerald-700 text-white rounded-lg text-sm font-bold flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-40 transition-colors"
                 >
                   <span>Hoàn thành đơn</span>
                   <ArrowRight className="w-4 h-4" />
@@ -461,21 +499,14 @@ export const POSPage: React.FC = () => {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-[var(--color-primary)] tracking-tight">Thanh toán đơn hàng</h1>
-              <p className="mt-0.5 text-sm text-slate-500">Chọn phương thức thanh toán cho đơn hàng.</p>
+              <h1 className="text-2xl font-bold text-[#024E82] tracking-tight">Thanh toán đơn hàng</h1>
             </div>
-            <button
-              onClick={() => setStep('cart')}
-              className="px-4 py-2 bg-white border border-slate-200 text-slate-700 text-xs font-bold rounded-xl hover:bg-slate-50"
-            >
-              ← Quay lại giỏ hàng
-            </button>
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 xl:gap-6 items-start">
             {/* CỘT TRÁI (5 CỘT): TÓM TẮT GIỎ HÀNG FIGMA */}
             <div className="xl:col-span-5 bg-white p-5 rounded-xl border border-slate-200 space-y-4">
-              <h2 className="text-base font-bold text-slate-900">Giỏ hàng</h2>
+              <h2 className="text-base font-bold text-[#024E82]">Giỏ hàng</h2>
 
               <div className="space-y-3 divide-y divide-slate-100 max-h-80 overflow-y-auto">
                 {cart.map((item) => (
@@ -498,10 +529,10 @@ export const POSPage: React.FC = () => {
                 <span className="font-bold text-slate-900">{formatVND(totalAmount)}</span>
               </div>
 
-              {/* Ô Tổng tiền */}
-              <div className="p-4 bg-highlight rounded-xl flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-700">Tổng tiền</span>
-                <span className="text-2xl font-black text-slate-900">{formatVND(totalAmount)}</span>
+              {/* Ô Tổng tiền chuẩn Figma */}
+              <div className="p-4 bg-[#ECF3F9] rounded-xl flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-800">Tổng tiền</span>
+                <span className="text-2xl font-black text-[#024E82]">{formatVND(totalAmount)}</span>
               </div>
             </div>
 
@@ -516,7 +547,7 @@ export const POSPage: React.FC = () => {
                   onClick={() => setPaymentMethod('cash')}
                   className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
                     paymentMethod === 'cash'
-                      ? 'border-[var(--color-primary)] bg-primary-soft text-[var(--color-primary)] font-bold ring-2 ring-[var(--color-primary)]/20'
+                      ? 'border-[#024E82] bg-primary-soft text-[#024E82] font-bold ring-2 ring-[#024E82]/20'
                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                   }`}
                 >
@@ -529,7 +560,7 @@ export const POSPage: React.FC = () => {
                   onClick={() => setPaymentMethod('transfer')}
                   className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
                     paymentMethod === 'transfer'
-                      ? 'border-[var(--color-primary)] bg-primary-soft text-[var(--color-primary)] font-bold ring-2 ring-[var(--color-primary)]/20'
+                      ? 'border-[#024E82] bg-primary-soft text-[#024E82] font-bold ring-2 ring-[#024E82]/20'
                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                   }`}
                 >
@@ -542,11 +573,11 @@ export const POSPage: React.FC = () => {
                   onClick={() => setPaymentMethod('debt')}
                   className={`p-4 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
                     paymentMethod === 'debt'
-                      ? 'border-[var(--color-primary)] bg-primary-soft text-[var(--color-primary)] font-bold ring-2 ring-[var(--color-primary)]/20'
+                      ? 'border-[#024E82] bg-primary-soft text-[#024E82] font-bold ring-2 ring-[#024E82]/20'
                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                   }`}
                 >
-                  <CreditCard className="w-5 h-5" />
+                  <NotebookPen className="w-5 h-5" />
                   <span className="text-xs">Ghi nợ</span>
                 </button>
               </div>
@@ -561,12 +592,15 @@ export const POSPage: React.FC = () => {
                     <div className="relative">
                       <input
                         type="text"
-                        value={cashGivenStr}
-                        onChange={(e) => setCashGivenStr(e.target.value)}
-                        placeholder={totalAmount.toString()}
-                        className="w-full text-2xl font-black text-slate-900 px-4 py-3 rounded-xl border border-slate-300 focus:outline-hidden focus:border-[var(--color-primary)]"
+                        value={formatNumberWithDots(cashGivenStr)}
+                        onChange={(e) => {
+                          const raw = e.target.value.replace(/\D/g, '');
+                          setCashGivenStr(raw);
+                        }}
+                        placeholder={formatNumberWithDots(totalAmount)}
+                        className="w-full text-2xl font-black text-slate-900 px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:border-[#024E82]"
                       />
-                      <span className="absolute right-4 top-4 font-bold text-slate-400">₫</span>
+                      <span className="absolute right-4 top-4 font-bold text-slate-400">đ</span>
                     </div>
                   </div>
 
@@ -599,9 +633,9 @@ export const POSPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setCashGivenStr(totalAmount.toString())}
-                      className="py-3 bg-[var(--color-primary)] text-white rounded-xl font-bold text-xs"
+                      className="py-3 bg-[#024E82] text-white rounded-xl font-bold text-sm hover:bg-blue-900"
                     >
-                      Đủ tiền
+                      Xác nhận
                     </button>
                   </div>
 
@@ -611,9 +645,9 @@ export const POSPage: React.FC = () => {
                   </div>
 
                   {/* Khối Tiền thừa màu hồng/đỏ nhạt chuẩn Figma UC 6 */}
-                  <div className="p-4 bg-danger-soft rounded-xl flex items-center justify-between">
+                  <div className="p-4 bg-[#FEECEB] rounded-xl flex items-center justify-between">
                     <span className="text-sm font-semibold text-slate-700">Tiền thừa</span>
-                    <span className="text-2xl font-black text-danger">
+                    <span className="text-2xl font-black text-[#E12B2B]">
                       {formatVND(changeAmount)}
                     </span>
                   </div>
@@ -623,7 +657,7 @@ export const POSPage: React.FC = () => {
                     type="button"
                     onClick={() => checkoutMutation.mutate()}
                     disabled={checkoutMutation.isPending}
-                    className="w-full py-4 bg-success bg-success-hover text-white font-bold rounded-lg text-base flex items-center justify-center gap-2 shadow-xs"
+                    className="w-full py-4 bg-[#24963E] hover:bg-emerald-700 text-white font-bold rounded-lg text-base flex items-center justify-center gap-2 shadow-xs transition-colors"
                   >
                     <Check className="w-5 h-5" />
                     <span>
@@ -663,7 +697,7 @@ export const POSPage: React.FC = () => {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Nội dung:</span>
-                      <span className="font-mono font-bold text-[var(--color-primary)]">
+                      <span className="font-mono font-bold text-[#024E82]">
                         BH{Date.now().toString().slice(-6)}
                       </span>
                     </div>
@@ -673,7 +707,7 @@ export const POSPage: React.FC = () => {
                     type="button"
                     onClick={() => checkoutMutation.mutate()}
                     disabled={checkoutMutation.isPending}
-                    className="w-full py-4 bg-success bg-success-hover text-white font-bold rounded-lg text-base flex items-center justify-center gap-2 shadow-xs"
+                    className="w-full py-4 bg-[#24963E] hover:bg-emerald-700 text-white font-bold rounded-lg text-base flex items-center justify-center gap-2 shadow-xs transition-colors"
                   >
                     <Check className="w-5 h-5" />
                     <span>
@@ -688,52 +722,117 @@ export const POSPage: React.FC = () => {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-1">
-                      Khách hàng (Bắt buộc khách quen)
+                      Khách hàng
                     </label>
-                    <select
-                      value={selectedCustomerId}
-                      onChange={(e) => setSelectedCustomerId(e.target.value)}
-                      className="w-full px-3 py-3 rounded-xl border border-slate-200 text-sm focus:outline-hidden focus:border-[var(--color-primary)] bg-white"
-                    >
-                      <option value="">-- Chọn khách quen ghi nợ --</option>
-                      {customers.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} {c.phone ? `(${c.phone})` : ''} — Nợ cũ: {formatVND(c.total_debt)}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                      <input
+                        type="text"
+                        value={customerSearch}
+                        onChange={(e) => setCustomerSearch(e.target.value)}
+                        placeholder="Tên hoặc số điện thoại"
+                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-[#024E82] bg-white"
+                      />
+                    </div>
                   </div>
 
-                  {selectedCustomer && (
-                    <div className="p-4 rounded-xl border border-[var(--color-primary)]/30 bg-primary-soft flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-[var(--color-primary)] text-white font-bold flex items-center justify-center text-sm shrink-0">
-                        {selectedCustomer.name.substring(0, 2).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className="font-bold text-slate-900 text-sm">{selectedCustomer.name}</p>
-                        <span className="inline-block text-[10px] font-bold bg-white text-[var(--color-primary)] px-2 py-0.5 rounded-full border border-primary-soft">
-                          Khách quen
-                        </span>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          {selectedCustomer.code} · {selectedCustomer.phone || 'Không có SĐT'}
-                        </p>
-                      </div>
+                  {/* Danh sách gợi ý khách quen khi tìm kiếm */}
+                  {!selectedCustomerId && customerSearch.trim() && (
+                    <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl bg-white divide-y divide-slate-100 shadow-xs">
+                      {customers
+                        .filter(
+                          (c) =>
+                            c.type === 'loyal' &&
+                            (c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
+                              (c.phone && c.phone.includes(customerSearch.trim())))
+                        )
+                        .map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCustomerId(c.id);
+                              setCustomerSearch('');
+                            }}
+                            className="w-full px-4 py-2.5 text-left hover:bg-[#ECF3F9] flex items-center justify-between text-xs"
+                          >
+                            <div>
+                              <p className="font-bold text-slate-900">{c.name}</p>
+                              <p className="text-slate-500 font-mono text-[11px]">
+                                {c.code} · {formatCustomerPhone(c.phone)}
+                              </p>
+                            </div>
+                            <span className="text-slate-500">Nợ cũ: {formatVND(c.total_debt)}</span>
+                          </button>
+                        ))}
                     </div>
                   )}
 
-                  <div className="p-4 bg-highlight rounded-xl flex items-center justify-between">
-                    <span className="text-sm font-semibold text-slate-700">Ghi nợ mới</span>
-                    <span className="text-2xl font-black text-slate-900">{formatVND(totalAmount)}</span>
+                  {/* Dropdown danh sách nếu chưa chọn và chưa gõ tìm kiếm */}
+                  {!selectedCustomerId && !customerSearch.trim() && (
+                    <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl bg-white divide-y divide-slate-100 shadow-xs">
+                      <div className="px-3 py-1.5 bg-slate-50 text-[11px] text-slate-400 font-medium">
+                        Chọn nhanh khách quen:
+                      </div>
+                      {customers
+                        .filter((c) => c.type === 'loyal')
+                        .map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => setSelectedCustomerId(c.id)}
+                            className="w-full px-4 py-2 text-left hover:bg-[#ECF3F9] flex items-center justify-between text-xs"
+                          >
+                            <span className="font-bold text-slate-800">{c.name}</span>
+                            <span className="text-slate-400 text-[11px] font-mono">{formatCustomerPhone(c.phone)}</span>
+                          </button>
+                        ))}
+                    </div>
+                  )}
+
+                  {/* Khung thông tin khách quen chuẩn ảnh 62 */}
+                  {selectedCustomer && (
+                    <div className="p-4 rounded-xl border border-[#024E82] bg-[#ECF3F9] flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-white text-[#024E82] font-bold flex items-center justify-center text-sm shrink-0 border border-slate-200">
+                          {selectedCustomer.name.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-900 text-sm">{selectedCustomer.name}</p>
+                          <span className="text-xs font-medium text-slate-700">Khách quen</span>
+                          <p className="text-[11px] text-slate-500 font-mono mt-0.5">
+                            {selectedCustomer.code} · {formatCustomerPhone(selectedCustomer.phone)}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCustomerId('');
+                          setCustomerSearch('');
+                        }}
+                        className="text-slate-400 hover:text-slate-600 p-1"
+                        title="Chọn khách khác"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Khung Ghi nợ mới chuẩn ảnh 62 */}
+                  <div className="p-4 bg-[#ECF3F9] rounded-xl flex items-center justify-between">
+                    <span className="text-sm font-bold text-slate-800">Ghi nợ mới</span>
+                    <span className="text-2xl font-black text-[#024E82]">{formatVND(totalAmount)}</span>
                   </div>
 
-                  {/* Nút Lưu đơn nợ & in hóa đơn màu xanh dương Figma UC 4 */}
+                  {/* Nút Lưu đơn nợ & in hóa đơn chuẩn ảnh 62 */}
                   <button
                     type="button"
                     onClick={() => checkoutMutation.mutate()}
                     disabled={!selectedCustomerId || checkoutMutation.isPending}
-                    className="w-full py-4 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-bold rounded-xl text-base flex items-center justify-center gap-2 shadow-xs disabled:opacity-50"
+                    className="w-full py-4 bg-[#024E82] hover:bg-blue-900 text-white font-bold rounded-xl text-base flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 transition-colors"
                   >
-                    <FileText className="w-5 h-5" />
+                    <NotebookPen className="w-5 h-5" />
                     <span>
                       {checkoutMutation.isPending ? 'Đang ghi nợ...' : 'Lưu đơn nợ & in hóa đơn'}
                     </span>
@@ -752,109 +851,77 @@ export const POSPage: React.FC = () => {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold text-[var(--color-primary)] tracking-tight">
-                {completedInvoice.status === 'unpaid' ? 'Đã lưu hóa đơn nợ' : 'Hoàn tất đơn hàng'}
-              </h1>
-              <p className="mt-0.5 text-sm text-slate-500">
-                Mã hóa đơn: <span className="font-mono font-semibold">{completedInvoice.code}</span>
-                {completedInvoice.status === 'unpaid' && ' · Chưa thanh toán'}
-              </p>
+              <h1 className="text-2xl font-bold text-[#024E82] tracking-tight">Hoàn tất đơn hàng</h1>
             </div>
             <button
               onClick={handleResetOrder}
-              className="px-4 py-2 bg-[var(--color-primary)] text-white text-xs font-bold rounded-xl hover:bg-[var(--color-primary-hover)]"
+              className="px-4 py-2 bg-[#024E82] text-white text-xs font-bold rounded-xl hover:bg-blue-900 flex items-center gap-1.5 transition-colors"
             >
-              + Tạo đơn hàng tiếp theo
+              <Plus className="w-4 h-4" />
+              <span>Tạo đơn hàng tiếp theo</span>
             </button>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* CỘT TRÁI (4 CỘT): THÔNG BÁO HOÀN TẤT */}
+            {/* CỘT TRÁI (4 CỘT): THÔNG BÁO HOÀN TẤT CHUẨN ẢNH 66 */}
             <div className="lg:col-span-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
-              <div
-                className={`mb-2 flex h-12 w-12 items-center justify-center rounded-full ${
-                  completedInvoice.status === 'unpaid'
-                    ? 'bg-primary-soft text-primary'
-                    : 'bg-primary-soft text-primary'
-                }`}
-              >
-                {completedInvoice.status === 'unpaid' ? (
-                  <AlertTriangle className="h-6 w-6" />
-                ) : (
-                  <Check className="h-6 w-6 stroke-[3]" />
-                )}
+              <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                <Check className="h-6 w-6 stroke-[3]" />
               </div>
 
-              <h2
-                className={`text-2xl font-black ${
-                  completedInvoice.status === 'unpaid' ? 'text-primary' : 'text-primary'
-                }`}
-              >
-                {completedInvoice.status === 'unpaid'
-                  ? 'Đơn hàng đang ghi nợ'
-                  : 'Đơn hàng đã thanh toán!'}
+              <h2 className="text-2xl font-black text-[#15803D]">
+                Đơn hàng đã hoàn tất!
               </h2>
-              {completedInvoice.status === 'unpaid' && (
-                <p className="text-sm text-primary">
-                  Hóa đơn này chưa được thanh toán và sẽ được ghi nhận trong sổ nợ.
-                </p>
-              )}
 
-              {completedInvoice.payment_method === 'cash' && (
-                <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Tiền khách đưa:</span>
-                    <span className="font-bold">{formatVND(completedInvoice.cash_given)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Đã trả lại khách:</span>
-                    <span className="font-bold text-danger">
-                      {formatVND(completedInvoice.change_given)}
-                    </span>
-                  </div>
+              <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-slate-500">Tiền khách đưa:</span>
+                  <span className="font-bold text-slate-800 text-sm">
+                    {formatVND(completedInvoice.cash_given || completedInvoice.total_amount)}
+                  </span>
                 </div>
-              )}
-
-              <button
-                onClick={() => window.print()}
-                className="w-full mt-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold flex items-center justify-center gap-2"
-              >
-                <Printer className="w-4 h-4" />
-                In lại hóa đơn
-              </button>
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-slate-500">Đã trả lại khách:</span>
+                  <span className="font-bold text-[#E12B2B] text-sm">
+                    {formatVND(completedInvoice.change_given || 0)}
+                  </span>
+                </div>
+              </div>
+              {/* BỎ nút In lại hóa đơn theo mục 38 / ảnh 66 */}
             </div>
 
             {/* CỘT PHẢI (8 CỘT): PHIẾU HÓA ĐƠN BÁN HÀNG FIGMA UC 3 */}
             <div className="lg:col-span-8 bg-white p-8 rounded-2xl border border-slate-200/80 shadow-2xs space-y-6">
               <div className="text-center pb-4 border-b border-slate-100 space-y-1">
-                <div className="w-10 h-10 rounded-xl bg-primary-soft text-[var(--color-primary)] mx-auto flex items-center justify-center mb-2">
+                <div className="w-10 h-10 rounded-xl bg-sky-50 text-[#024E82] mx-auto flex items-center justify-center mb-2">
                   <Store className="w-5 h-5" />
                 </div>
-                <h3 className="font-black text-lg text-slate-900 uppercase">
-                  {storeName}
+                <h3 className="font-bold text-lg text-[#024E82] uppercase tracking-wide">
+                  TẠP HÓA HẰNG
                 </h3>
-                <h4 className="text-base font-bold text-slate-800 pt-2 uppercase tracking-wide">
+                <p className="text-xs text-slate-500">
+                  32 Phạm Xuân Ẩn, Hòa Xuân, Đà Nẵng
+                </p>
+                <h4 className="text-base font-bold text-slate-800 pt-3 uppercase tracking-wide">
                   HÓA ĐƠN BÁN HÀNG
                 </h4>
-                <p className="font-mono text-xs font-bold text-[var(--color-primary)]">{completedInvoice.code}</p>
+                <p className="font-mono text-xs font-bold text-slate-700">{completedInvoice.code}</p>
               </div>
 
-              <div className="flex justify-between text-xs text-slate-600">
-                <span>Thời gian: {formatDateTime(completedInvoice.created_at)}</span>
-                <span className="font-medium">
-                  Khách hàng: {completedInvoice.customer_name || 'Khách lẻ'}
-                </span>
+              <div className="flex justify-between text-xs text-slate-600 py-1">
+                <span>Thời gian: <span className="font-medium text-slate-800">{formatDateTime(completedInvoice.created_at).replace(' ', ' · ')}</span></span>
+                <span>Khách hàng: <span className="font-medium text-slate-800">{completedInvoice.customer_name || 'Khách lẻ'}</span></span>
               </div>
 
               {/* Bảng dòng hàng hóa đơn */}
               <table className="w-full text-xs text-left">
-                <thead className="bg-[var(--surface-muted)] text-slate-500 font-semibold">
+                <thead className="bg-[#F8FAFC] text-slate-500 font-semibold border-y border-slate-100">
                   <tr>
-                    <th className="py-2 px-3">Mã SP / Tên sản phẩm</th>
-                    <th className="py-2 px-2 text-center">ĐVT</th>
-                    <th className="py-2 px-2 text-center">SL</th>
-                    <th className="py-2 px-2 text-right">Đơn giá</th>
-                    <th className="py-2 px-3 text-right">Thành tiền</th>
+                    <th className="py-2.5 px-3">Mã SP / Tên sản phẩm</th>
+                    <th className="py-2.5 px-2 text-center">ĐVT</th>
+                    <th className="py-2.5 px-2 text-center">SL</th>
+                    <th className="py-2.5 px-2 text-right">Đơn giá</th>
+                    <th className="py-2.5 px-3 text-right">Thành tiền</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -866,7 +933,9 @@ export const POSPage: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-2 text-center text-slate-500">{i.unit}</td>
                       <td className="py-2.5 px-2 text-center font-bold text-slate-800">{i.quantity}</td>
-                      <td className="py-2.5 px-2 text-right text-slate-600">{formatVND(i.unit_price)}</td>
+                      <td className="py-2.5 px-2 text-right text-slate-600">
+                        {formatVND(i.unit_price).replace(' ₫', '').replace(' đ', '')}
+                      </td>
                       <td className="py-2.5 px-3 text-right font-black text-slate-900">
                         {formatVND(i.total_amount)}
                       </td>
@@ -875,17 +944,42 @@ export const POSPage: React.FC = () => {
                 </tbody>
               </table>
 
-              {/* Ô Tổng tiền */}
-              <div className="p-4 bg-highlight rounded-xl flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-700">Tổng tiền</span>
-                <span className="text-2xl font-black text-slate-900">
+              {/* Ô Tổng tiền chuẩn Figma */}
+              <div className="p-4 bg-[#ECF3F9] rounded-xl flex items-center justify-between">
+                <span className="text-sm font-bold text-slate-800">Tổng tiền</span>
+                <span className="text-2xl font-black text-[#024E82]">
                   {formatVND(completedInvoice.total_amount)}
                 </span>
               </div>
 
+              <div className="space-y-2 text-xs pt-1">
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-500">Phương thức:</span>
+                  <span className="font-bold text-slate-800">
+                    {completedInvoice.payment_method === 'cash' ? 'Tiền mặt' : completedInvoice.payment_method === 'transfer' ? 'Chuyển khoản' : 'Ghi nợ'}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-50">
+                  <span className="text-slate-500">Đã thanh toán:</span>
+                  <span className="font-bold text-emerald-600">{formatVND(completedInvoice.status === 'unpaid' ? 0 : completedInvoice.total_amount)}</span>
+                </div>
+                {completedInvoice.payment_method === 'cash' && (
+                  <>
+                    <div className="flex justify-between py-1 border-b border-slate-50">
+                      <span className="text-slate-500">Tiền khách đưa:</span>
+                      <span className="font-bold text-slate-800">{formatVND(completedInvoice.cash_given || completedInvoice.total_amount)}</span>
+                    </div>
+                    <div className="flex justify-between py-1">
+                      <span className="text-slate-500">Tiền thừa trả khách:</span>
+                      <span className="font-bold text-[#E12B2B]">{formatVND(completedInvoice.change_given || 0)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
               <div className="text-center pt-4 border-t border-slate-100 text-xs text-slate-500 space-y-0.5">
                 <p className="font-bold text-slate-800">Cảm ơn quý khách. Hẹn gặp lại!</p>
-                <p className="text-[11px] text-slate-400">Vui lòng giữ hóa đơn để đổi chiếu.</p>
+                <p className="text-[11px] text-slate-400">Vui lòng giữ hóa đơn để đối chiếu.</p>
               </div>
             </div>
           </div>
