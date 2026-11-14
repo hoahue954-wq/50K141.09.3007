@@ -1,18 +1,17 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Store, User, Lock, Eye, EyeOff, ShieldCheck, CheckCircle } from 'lucide-react';
-import { useToast } from '../context/ToastContext';
+import { Store, User, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [hasSubmitted, setHasSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
-  const { showSuccess } = useToast();
 
   React.useEffect(() => {
     const expiredMsg = sessionStorage.getItem('th_hang_session_expired');
@@ -24,42 +23,25 @@ export const LoginPage: React.FC = () => {
 
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!username.trim()) {
-      setErrorMsg('Vui lòng nhập tên đăng nhập.');
+    setHasSubmitted(true);
+    setErrorMsg('');
+
+    const isUserEmpty = !username.trim();
+    const isPassEmpty = !password;
+
+    if (isUserEmpty || isPassEmpty) {
       return;
     }
-    setErrorMsg('');
+
     setIsLoading(true);
     try {
-      const user = await login(username, password);
-      showSuccess(`Đăng nhập thành công! Chào mừng ${user.full_name}`);
-      if (user.role === 'owner') {
-        navigate('/');
-      } else {
-        navigate('/');
-      }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Đăng nhập không thành công. Vui lòng kiểm tra lại.');
+      await login(username, password);
+      sessionStorage.setItem('show_login_success', 'true');
+      navigate('/');
+    } catch {
+      setErrorMsg('Đăng nhập không thành công!');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleQuickLogin = (role: 'owner' | 'staff') => {
-    if (role === 'owner') {
-      setUsername('chu@taphoahang.local');
-      setPassword('123456');
-      login('chu@taphoahang.local', '123456').then(() => {
-        showSuccess('Đăng nhập thành công với vai trò Chủ!');
-        navigate('/');
-      });
-    } else {
-      setUsername('nhanvien@taphoahang.local');
-      setPassword('123456');
-      login('nhanvien@taphoahang.local', '123456').then(() => {
-        showSuccess('Đăng nhập thành công với vai trò Nhân viên!');
-        navigate('/');
-      });
     }
   };
 
@@ -127,100 +109,96 @@ export const LoginPage: React.FC = () => {
       </div>
 
       <div className="w-full md:flex-1 flex items-center justify-center px-5 py-10 md:px-12 md:py-12">
-        <div className="w-full max-w-[520px] bg-white rounded-2xl border border-[var(--border)] p-7 sm:p-9 md:p-10 space-y-8">
+        <div className="w-full max-w-[520px] bg-white rounded-2xl border border-[var(--border)] p-7 sm:p-9 md:p-10 space-y-8 shadow-xs">
           <div>
             <h2 className="text-2xl md:text-[30px] leading-tight font-bold text-slate-900 tracking-tight">
               Đăng nhập hệ thống
             </h2>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-5">
+          <form onSubmit={handleLogin} className="space-y-5" noValidate>
             {errorMsg && (
-              <div className="p-3.5 bg-danger-soft border border-danger/25 rounded-lg text-danger text-xs font-semibold flex items-center gap-2" role="alert">
-                <span className="w-4 h-4 rounded-full border border-danger flex items-center justify-center shrink-0 text-[10px]">!</span>
+              <div className="p-3.5 bg-[#FEF2F2] border border-[#FEE2E2] rounded-xl text-danger text-sm font-medium flex items-center gap-2.5" role="alert">
+                <AlertCircle className="w-5 h-5 text-danger shrink-0" />
                 <span>{errorMsg}</span>
               </div>
             )}
 
             <div>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                  <User className="w-4 h-4" />
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                  <User className="w-5 h-5" />
                 </div>
                 <input
                   type="text"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    if (errorMsg) setErrorMsg('');
+                  }}
                   placeholder="Tên đăng nhập"
                   aria-label="Tên đăng nhập"
-                  aria-invalid={Boolean(errorMsg && !username.trim())}
-                  className={`ui-input w-full pl-12 pr-4 h-[54px] text-sm font-medium placeholder:text-slate-500 ${
-                    errorMsg && !username.trim() ? 'border-danger focus:border-danger' : 'focus:border-[var(--color-primary)]'
+                  aria-invalid={hasSubmitted && !username.trim()}
+                  className={`w-full pl-12 pr-11 h-[54px] rounded-xl text-sm font-medium border transition-colors outline-none placeholder:text-slate-400 ${
+                    hasSubmitted && !username.trim()
+                      ? 'border-danger focus:border-danger'
+                      : 'border-[var(--border)] focus:border-[var(--color-primary)]'
                   }`}
                 />
+                {hasSubmitted && !username.trim() && (
+                  <div className="absolute inset-y-0 right-0 pr-4 flex items-center pointer-events-none text-danger">
+                    <AlertCircle className="w-5 h-5 text-danger" />
+                  </div>
+                )}
               </div>
-              {errorMsg && !username.trim() && (
-                <p className="mt-2 text-xs text-danger">Không được để trống!</p>
+              {hasSubmitted && !username.trim() && (
+                <p className="mt-1.5 text-xs text-danger font-medium">Không được để trống!</p>
               )}
             </div>
 
             <div>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                  <Lock className="w-4 h-4" />
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+                  <Lock className="w-5 h-5" />
                 </div>
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (errorMsg) setErrorMsg('');
+                  }}
                   placeholder="Mật khẩu"
                   aria-label="Mật khẩu"
-                  className="ui-input w-full pl-12 pr-12 h-[54px] text-sm font-medium placeholder:text-slate-500 focus:border-[var(--color-primary)]"
+                  aria-invalid={hasSubmitted && !password}
+                  className={`w-full pl-12 pr-12 h-[54px] rounded-xl text-sm font-medium border transition-colors outline-none placeholder:text-slate-400 ${
+                    hasSubmitted && !password
+                      ? 'border-danger focus:border-danger'
+                      : 'border-[var(--border)] focus:border-[var(--color-primary)]'
+                  }`}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                  className="absolute inset-y-0 right-0 px-4 flex items-center text-slate-500 hover:text-slate-700"
+                  className="absolute inset-y-0 right-0 px-4 flex items-center text-slate-400 hover:text-slate-600 focus:outline-none"
                 >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  {showPassword ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
                 </button>
               </div>
+              {hasSubmitted && !password && (
+                <p className="mt-1.5 text-xs text-danger font-medium">Không được để trống!</p>
+              )}
             </div>
 
             <button
               type="submit"
               disabled={isLoading}
-              className="ui-button ui-button-primary w-full min-h-[54px] px-4 text-sm rounded-lg flex items-center justify-center gap-2 disabled:opacity-50"
+              className="ui-button ui-button-primary w-full min-h-[52px] px-4 text-sm font-semibold rounded-xl flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isLoading && <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
               <span>{isLoading ? 'Đang đăng nhập...' : 'Đăng nhập'}</span>
             </button>
-
-            {/* Phím tắt đăng nhập nhanh để kiểm tra phân quyền */}
-            <div className="pt-4 border-t border-slate-100">
-              <p className="text-xs text-center text-slate-400 font-medium mb-2.5">
-                ⚡ Chọn nhanh vai trò để kiểm tra phân quyền:
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickLogin('owner')}
-                  className="flex items-center justify-center gap-1.5 py-2 px-3 bg-primary-soft hover:bg-primary-soft text-[var(--color-primary)] border border-primary-soft rounded-xl text-xs font-bold transition-colors"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-[var(--color-primary)]" />
-                  Vào vai Chủ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickLogin('staff')}
-                  className="flex items-center justify-center gap-1.5 py-2 px-3 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition-colors"
-                >
-                  <CheckCircle className="w-3.5 h-3.5 text-slate-500" />
-                  Vào vai Nhân viên
-                </button>
-              </div>
-            </div>
           </form>
         </div>
       </div>

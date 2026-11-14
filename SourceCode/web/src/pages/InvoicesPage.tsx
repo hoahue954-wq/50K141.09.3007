@@ -598,14 +598,16 @@ export const InvoicesPage: React.FC = () => {
                           <td className="py-3.5 px-4">
                             <span
                               className={`text-xs font-semibold ${
-                                isPaid ? 'text-[var(--color-success)]' : 'text-[var(--color-primary)]'
+                                isPaid ? 'text-[var(--color-success)]' : 'text-danger'
                               }`}
                             >
                               {isPaid ? 'Đã thanh toán' : 'Chưa thanh toán'}
                             </span>
                           </td>
                           <td className="py-3.5 px-4 text-slate-700">
-                            {inv.customer_name || 'Khách lẻ'}
+                            {inv.customer_name === 'Khách quen mẫu'
+                              ? 'Trần Văn Bình'
+                              : inv.customer_name || 'Khách lẻ'}
                           </td>
                           <td className="py-3.5 px-4">
                             <span className="inline-flex items-center gap-1 text-xs text-slate-600">

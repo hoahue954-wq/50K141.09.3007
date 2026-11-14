@@ -260,6 +260,8 @@ export const invoiceService = {
         name: product.productName,
         quantity: product._sum.quantity ?? 0,
         total_amount: Number(product._sum.lineTotal ?? 0),
+        unit: product.unit || 'sản phẩm',
+        image_url: product.imageUrl || null,
       })),
     };
   },

@@ -192,13 +192,13 @@ async function main() {
         const created = productByBarcode.get(product.barcode);
         return created
           ? [{
-              productId: created.id,
-              type: InventoryTransactionType.ADJUSTMENT,
-              quantity: product.stock,
-              stockAfter: product.stock,
-              refType: 'SEED',
-              createdById: ownerAuth.id,
-            }]
+            productId: created.id,
+            type: InventoryTransactionType.ADJUSTMENT,
+            quantity: product.stock,
+            stockAfter: product.stock,
+            refType: 'SEED',
+            createdById: ownerAuth.id,
+          }]
           : [];
       });
 
@@ -207,13 +207,13 @@ async function main() {
 
     await tx.customer.upsert({
       where: { code: 'KH000001' },
-      create: { code: 'KH000001', name: 'Khách quen mẫu', phone: '0900000001', isRegular: true },
-      update: {},
+      create: { code: 'KH000001', name: 'Trần Văn Bình', phone: '0900000001', isRegular: true },
+      update: { name: 'Trần Văn Bình' },
     });
     await tx.customer.upsert({
       where: { code: 'KH000002' },
-      create: { code: 'KH000002', name: 'Khách quen thứ hai', phone: '0900000002', isRegular: true },
-      update: {},
+      create: { code: 'KH000002', name: 'Nguyễn Văn An', phone: '0900000002', isRegular: true },
+      update: { name: 'Nguyễn Văn An' },
     });
     await tx.storeSettings.upsert({
       where: { id: 1 },
