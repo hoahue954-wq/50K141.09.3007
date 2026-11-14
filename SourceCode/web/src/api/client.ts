@@ -91,18 +91,52 @@ export function resetMockDataToDefault() {
 // --- Quản lý Refresh Token dùng chung cho các request song song (Single-flight) ---
 let refreshPromise: Promise<string | null> | null = null;
 
+function isRefreshTrulyRejected(error: any): boolean {
+  if (!error) return false;
+  const status = error.status;
+  if (status === 400 || status === 401 || status === 403) return true;
+  const msg = String(error.message || '').toLowerCase();
+  const code = String(error.code || '').toLowerCase();
+  if (
+    code.includes('invalid_grant') ||
+    code.includes('refresh_token_not_found') ||
+    code.includes('session_not_found') ||
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh token not found') ||
+    msg.includes('session not found') ||
+    msg.includes('token is expired')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 async function doSharedTokenRefresh(): Promise<string | null> {
   if (IS_MOCK) return null;
   if (!refreshPromise) {
     refreshPromise = (async () => {
       try {
         const { data, error } = await supabase.auth.refreshSession();
-        if (error || !data.session?.access_token) {
+        if (error) {
+          if (isRefreshTrulyRejected(error)) {
+            return null; // Bị từ chối thật sự
+          }
+          // Lỗi tạm thời (mạng, timeout, 5xx): ném lỗi thường, không coi là hết hạn
+          throw new Error('Hệ thống đang bận, vui lòng thử lại.');
+        }
+        if (!data.session?.access_token) {
           return null;
         }
         return data.session.access_token;
-      } catch {
-        return null;
+      } catch (err: any) {
+        if (err?.message === 'Hệ thống đang bận, vui lòng thử lại.') {
+          throw err;
+        }
+        if (isRefreshTrulyRejected(err)) {
+          return null;
+        }
+        // Các lỗi exception khác (fetch failed, timeout, network error): ném lỗi thường
+        throw new Error('Hệ thống đang bận, vui lòng thử lại.');
       } finally {
         refreshPromise = null;
       }
@@ -114,6 +148,7 @@ async function doSharedTokenRefresh(): Promise<string | null> {
 // Xử lý khi phiên đăng nhập hết hạn hoàn toàn
 function handleAuthExpired(): void {
   if (IS_MOCK) return;
+  localStorage.removeItem('th_hang_cached_auth_profile');
   supabase.auth.signOut().catch(() => {});
   sessionStorage.setItem('th_hang_session_expired', 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
   if (!window.location.hash.includes('/login')) {
@@ -135,11 +170,12 @@ async function getAuthHeader(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-// Hàm fetch wrapper khi dùng API thật (tự động thử lại 1 lần nếu 401, hỗ trợ timeout)
+// Hàm fetch wrapper khi dùng API thật (tự động thử lại 1 lần nếu 401, hỗ trợ timeout và retry 503)
 async function apiFetch<T>(
   endpoint: string,
   options: RequestInit & { timeout?: number } = {},
-  isRetry = false
+  isRetry = false,
+  unavailableRetryCount = 0
 ): Promise<T> {
   const headers = await getAuthHeader();
   const { timeout, ...fetchOptions } = options;
@@ -176,23 +212,32 @@ async function apiFetch<T>(
   if (!res.ok) {
     // Nếu API trả 401 và chưa thử lại: refresh token rồi gửi lại đúng 1 lần
     if (res.status === 401 && !isRetry && !IS_MOCK) {
-      const newToken = await doSharedTokenRefresh();
-      if (newToken) {
-        return apiFetch<T>(
-          endpoint,
-          {
-            ...options,
-            headers: {
-              ...options.headers,
-              Authorization: `Bearer ${newToken}`,
+      try {
+        const newToken = await doSharedTokenRefresh();
+        if (newToken) {
+          return apiFetch<T>(
+            endpoint,
+            {
+              ...options,
+              headers: {
+                ...options.headers,
+                Authorization: `Bearer ${newToken}`,
+              },
             },
-          },
-          true
-        );
-      } else {
-        // Refresh thất bại: đăng xuất sạch và chuyển về /login
-        handleAuthExpired();
-        throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+            true,
+            unavailableRetryCount
+          );
+        } else {
+          // Refresh bị từ chối thật: đăng xuất sạch và chuyển về /login
+          handleAuthExpired();
+          throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+        }
+      } catch (refreshErr: any) {
+        // Lỗi tạm thời khi refresh: ném lỗi thường, KHÔNG gọi handleAuthExpired
+        if (refreshErr?.message === 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.') {
+          throw refreshErr;
+        }
+        throw new Error(refreshErr?.message || 'Hệ thống đang bận, vui lòng thử lại.');
       }
     }
 
@@ -202,6 +247,13 @@ async function apiFetch<T>(
     }
 
     const errorData = await res.json().catch(() => ({}));
+
+    // Server trả 503 AUTH_UNAVAILABLE: thử lại tối đa 2 lần cách nhau 1-2 giây
+    if (res.status === 503 && errorData.code === 'AUTH_UNAVAILABLE' && unavailableRetryCount < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return apiFetch<T>(endpoint, options, isRetry, unavailableRetryCount + 1);
+    }
+
     throw new Error(errorData.message || `Lỗi API (${res.status}): ${res.statusText}`);
   }
 
@@ -285,7 +337,9 @@ export const api = {
         throw new Error(error.message);
       }
       // Tra thông tin profile từ API
-      return apiFetch<UserProfile>('/auth/me');
+      const profile = await apiFetch<UserProfile>('/auth/me');
+      setStorage('cached_auth_profile', profile);
+      return profile;
     },
 
     getCurrentUser(): UserProfile | null {
@@ -302,11 +356,36 @@ export const api = {
       try {
         const { data, error } = await supabase.auth.getSession();
         if (error || !data.session) {
+          // Thật sự không có phiên đăng nhập trong local storage
           return null;
         }
-        // Gọi API backend /auth/me để lấy profile người dùng
-        const profile = await apiFetch<UserProfile>('/auth/me');
-        return profile;
+
+        // Đã có session, thử lấy profile mới nhất từ API /auth/me
+        try {
+          const profile = await apiFetch<UserProfile>('/auth/me');
+          setStorage('cached_auth_profile', profile);
+          return profile;
+        } catch (apiErr: any) {
+          const msg = String(apiErr?.message || '');
+          // Chỉ coi là hết hạn thật sự khi server trả 401/403 hoặc thông báo hết hạn
+          if (msg.includes('Phiên đăng nhập đã hết hạn') || msg.includes('401') || msg.includes('403')) {
+            return null;
+          }
+          // Lỗi tạm thời (503 AUTH_UNAVAILABLE hoặc mạng chập chờn): KHÔNG coi là chưa đăng nhập
+          const cached = getStorage<UserProfile | null>('cached_auth_profile', null);
+          if (cached) {
+            return cached;
+          }
+          const meta = data.session.user.user_metadata || {};
+          return {
+            id: data.session.user.id,
+            username: meta.username || data.session.user.email?.split('@')[0] || 'user',
+            full_name: meta.full_name || meta.name || 'Người dùng',
+            role: (meta.role === 'owner' ? 'owner' : 'staff') as Role,
+            status: 'active',
+            created_at: data.session.user.created_at || new Date().toISOString(),
+          };
+        }
       } catch (err) {
         console.error('Không thể khôi phục phiên đăng nhập:', err);
         return null;
@@ -321,6 +400,7 @@ export const api = {
         } else if (event === 'SIGNED_IN') {
           try {
             const profile = await apiFetch<UserProfile>('/auth/me');
+            setStorage('cached_auth_profile', profile);
             callback(profile);
           } catch {
             // Không làm gián đoạn UI nếu /auth/me lỗi tạm thời
@@ -336,6 +416,7 @@ export const api = {
         localStorage.removeItem('th_hang_current_user');
         return;
       }
+      localStorage.removeItem('th_hang_cached_auth_profile');
       await supabase.auth.signOut();
     },
 
