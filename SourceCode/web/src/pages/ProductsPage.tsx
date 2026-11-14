@@ -17,6 +17,8 @@ import {
   Barcode as BarcodeIcon,
   CheckCircle2,
   AlertCircle,
+  Check,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -29,6 +31,16 @@ import { ErrorState } from '../components/common/ErrorState';
 type PageMode = 'list' | 'create' | 'edit' | 'detail';
 const PAGE_SIZE = 10;
 
+type ProductModalState =
+  | { type: 'duplicate_create'; message: string }
+  | { type: 'empty_fields_create' }
+  | { type: 'invalid_info_create' }
+  | { type: 'success_create'; product: { name: string; barcode: string; stock: number } }
+  | { type: 'invalid_info_edit' }
+  | { type: 'duplicate_edit' }
+  | { type: 'success_edit'; product: { name: string; price: number } }
+  | null;
+
 export const ProductsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlMode = searchParams.get('mode') as PageMode | null;
@@ -37,6 +49,12 @@ export const ProductsPage: React.FC = () => {
   const [mode, setMode] = useState<PageMode>('list');
   const [activeProduct, setActiveProduct] = useState<Product | null>(null);
   const [deleteProduct, setDeleteProduct] = useState<Product | null>(null);
+  const [referencedProduct, setReferencedProduct] = useState<{
+    product: Product;
+    invoiceCode: string;
+  } | null>(null);
+
+  const [productModal, setProductModal] = useState<ProductModalState>(null);
 
   // Search & Filter state
   const [searchInput, setSearchInput] = useState('');
@@ -55,10 +73,15 @@ export const ProductsPage: React.FC = () => {
   const [imageUrlError, setImageUrlError] = useState('');
   const [barcodeError, setBarcodeError] = useState('');
   const [formError, setFormError] = useState('');
-  const [formNotice, setFormNotice] = useState<{
-    type: 'success' | 'error';
-    message: string;
-  } | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    barcode?: string;
+    name?: string;
+    categoryId?: string;
+    unit?: string;
+    costPrice?: string;
+    sellingPrice?: string;
+    imageUrl?: string;
+  }>({});
 
   const validateBarcode = (val: string): string => {
     const trimmed = val.trim();
@@ -79,7 +102,7 @@ export const ProductsPage: React.FC = () => {
       }
       return '';
     } catch {
-      return 'Đường dẫn ảnh không hợp lệ (ví dụ: https://example.com/anh.jpg)';
+      return 'Đường dẫn ảnh phải là URL hợp lệ bắt đầu bằng http:// hoặc https://';
     }
   };
 
@@ -101,6 +124,11 @@ export const ProductsPage: React.FC = () => {
   const { data: categories = [] } = useQuery({
     queryKey: ['categories'],
     queryFn: () => api.categories.list(),
+  });
+
+  const { data: invoices = [] } = useQuery({
+    queryKey: ['invoices'],
+    queryFn: () => api.invoices.list(),
   });
 
   // Filtered products
@@ -132,6 +160,7 @@ export const ProductsPage: React.FC = () => {
         setUnit(p.unit);
         setImageUrl(p.image_url || '');
         setImageUrlError('');
+        setFieldErrors({});
         setActiveProduct(p);
       }
     }
@@ -141,46 +170,9 @@ export const ProductsPage: React.FC = () => {
     setSearchParams({});
     setMode('list');
     setActiveProduct(null);
-    setFormNotice(null);
+    setProductModal(null);
+    setFieldErrors({});
   };
-
-  const handleCloseFormNotice = () => {
-    const notice = formNotice;
-    setFormNotice(null);
-    if (notice?.type === 'success') {
-      handleBackToList();
-      showSuccess(notice.message);
-    }
-  };
-
-  const formNoticeModal = formNotice && (
-    <Modal
-      isOpen
-      onClose={handleCloseFormNotice}
-      title={formNotice.type === 'success' ? 'Lưu thành công' : 'Không thể lưu sản phẩm'}
-      maxWidth="sm"
-    >
-      <div className="flex flex-col items-center text-center">
-        {formNotice.type === 'success' ? (
-          <CheckCircle2 className="mb-4 h-10 w-10 text-primary" />
-        ) : (
-          <AlertCircle className="mb-4 h-10 w-10 text-primary" />
-        )}
-        <p className="text-sm leading-relaxed text-slate-600">{formNotice.message}</p>
-        <button
-          type="button"
-          onClick={handleCloseFormNotice}
-          className={`mt-6 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white ${
-            formNotice.type === 'success'
-              ? 'bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)]'
-              : 'bg-slate-700 hover:bg-slate-800'
-          }`}
-        >
-          {formNotice.type === 'success' ? 'Về danh sách sản phẩm' : 'Đã hiểu'}
-        </button>
-      </div>
-    </Modal>
-  );
 
   // Form Handlers
   const handleOpenCreate = () => {
@@ -194,7 +186,8 @@ export const ProductsPage: React.FC = () => {
     setImageUrl('');
     setImageUrlError('');
     setFormError('');
-    setFormNotice(null);
+    setFieldErrors({});
+    setProductModal(null);
     setActiveProduct(null);
     setMode('create');
     setSearchParams({ mode: 'create' });
@@ -211,7 +204,8 @@ export const ProductsPage: React.FC = () => {
     setImageUrl(p.image_url || '');
     setImageUrlError('');
     setFormError('');
-    setFormNotice(null);
+    setFieldErrors({});
+    setProductModal(null);
     setActiveProduct(p);
     setMode('edit');
     setSearchParams({ mode: 'edit', barcode: p.barcode });
@@ -226,34 +220,14 @@ export const ProductsPage: React.FC = () => {
   // Mutations
   const createMutation = useMutation({
     mutationFn: () => {
-      setFormError('');
-      const bErr = validateBarcode(barcode);
-      if (bErr) {
-        setBarcodeError(bErr);
-        throw new Error(bErr);
-      }
-      if (!name.trim()) throw new Error('Vui lòng nhập tên sản phẩm.');
-      if (!categoryId) throw new Error('Vui lòng chọn danh mục.');
-      if (!unit.trim()) throw new Error('Vui lòng nhập đơn vị tính.');
-      const sp = Number(sellingPrice);
-      const cp = Number(costPrice);
-      if (isNaN(sp) || sp <= 0) throw new Error('Giá bán phải là số lớn hơn 0.');
-      if (isNaN(cp) || cp <= 0) throw new Error('Giá nhập phải là số lớn hơn 0.');
-
-      const imgErr = validateImageUrl(imageUrl);
-      if (imgErr) {
-        setImageUrlError(imgErr);
-        throw new Error(imgErr);
-      }
-
       const cat = categories.find((c) => c.id === categoryId);
       return api.products.create({
         barcode: barcode.trim(),
         name: name.trim(),
         category_id: categoryId,
         category_name: cat?.name || '',
-        selling_price: sp,
-        cost_price: cp,
+        selling_price: Number(sellingPrice),
+        cost_price: Number(costPrice),
         unit: unit.trim(),
         stock_quantity: 0,
         min_stock: 5,
@@ -261,51 +235,51 @@ export const ProductsPage: React.FC = () => {
       });
     },
     onSuccess: (prod) => {
-      setFormNotice({ type: 'success', message: `Đã tạo sản phẩm "${prod.name}" thành công!` });
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      setProductModal({
+        type: 'success_create',
+        product: { name: prod.name, barcode: prod.barcode, stock: prod.stock_quantity || 0 },
+      });
     },
     onError: (err: any) => {
-      setFormError(err.message);
-      setFormNotice({ type: 'error', message: err.message });
+      if (err.message?.includes('tồn tại') || err.message?.includes('DUPLICATE')) {
+        setProductModal({
+          type: 'duplicate_create',
+          message: err.message,
+        });
+      } else {
+        setProductModal({ type: 'invalid_info_create' });
+      }
     },
   });
 
   const updateMutation = useMutation({
     mutationFn: () => {
       if (!currentProduct) throw new Error('Không tìm thấy sản phẩm cần sửa.');
-      setFormError('');
-      if (!name.trim()) throw new Error('Vui lòng nhập tên sản phẩm.');
-      if (!categoryId) throw new Error('Vui lòng chọn danh mục.');
-      if (!unit.trim()) throw new Error('Vui lòng nhập đơn vị tính.');
-      const sp = Number(sellingPrice);
-      const cp = Number(costPrice);
-      if (isNaN(sp) || sp <= 0) throw new Error('Giá bán phải là số lớn hơn 0.');
-      if (isNaN(cp) || cp <= 0) throw new Error('Giá nhập phải là số lớn hơn 0.');
-
-      const imgErr = validateImageUrl(imageUrl);
-      if (imgErr) {
-        setImageUrlError(imgErr);
-        throw new Error(imgErr);
-      }
-
       const cat = categories.find((c) => c.id === categoryId);
       return api.products.update(currentProduct.barcode, {
         name: name.trim(),
         category_id: categoryId,
         category_name: cat?.name || '',
-        selling_price: sp,
-        cost_price: cp,
+        selling_price: Number(sellingPrice),
+        cost_price: Number(costPrice),
         unit: unit.trim(),
         image_url: imageUrl.trim() || undefined,
       });
     },
     onSuccess: (prod) => {
-      setFormNotice({ type: 'success', message: `Đã cập nhật sản phẩm "${prod.name}" thành công!` });
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      setProductModal({
+        type: 'success_edit',
+        product: { name: prod.name, price: prod.selling_price },
+      });
     },
     onError: (err: any) => {
-      setFormError(err.message);
-      setFormNotice({ type: 'error', message: err.message });
+      if (err.message?.includes('tồn tại') || err.message?.includes('DUPLICATE')) {
+        setProductModal({ type: 'duplicate_edit' });
+      } else {
+        setProductModal({ type: 'invalid_info_edit' });
+      }
     },
   });
 
@@ -316,8 +290,135 @@ export const ProductsPage: React.FC = () => {
       setDeleteProduct(null);
       queryClient.invalidateQueries({ queryKey: ['products'] });
     },
-    onError: (err: any) => showError(err.message),
+    onError: (err: any) => {
+      if (deleteProduct) {
+        setReferencedProduct({
+          product: deleteProduct,
+          invoiceCode: 'trong hệ thống',
+        });
+        setDeleteProduct(null);
+      } else {
+        showError(err.message);
+      }
+    },
   });
+
+  const handleDeleteClick = (p: Product) => {
+    // Kiểm tra sản phẩm đã được tham chiếu bởi hóa đơn nào chưa
+    const refInvoice = invoices.find((inv: any) =>
+      inv.items?.some((it: any) => it.product_barcode === p.barcode)
+    );
+
+    if (refInvoice) {
+      setReferencedProduct({ product: p, invoiceCode: refInvoice.code });
+    } else {
+      setDeleteProduct(p);
+    }
+  };
+
+  const handleSubmitCreate = () => {
+    const errors: typeof fieldErrors = {};
+    const trimmedBarcode = barcode.trim();
+    const trimmedName = name.trim();
+    const trimmedUnit = unit.trim();
+    const sp = Number(sellingPrice);
+    const cp = Number(costPrice);
+
+    if (!trimmedBarcode) errors.barcode = 'Mã vạch không được để trống';
+    if (!trimmedName) errors.name = 'Tên sản phẩm không được để trống';
+    if (!categoryId) errors.categoryId = 'Vui lòng chọn danh mục';
+    if (!trimmedUnit) errors.unit = 'Đơn vị tính không được để trống';
+    if (!costPrice) errors.costPrice = 'Giá nhập không được để trống';
+    if (!sellingPrice) errors.sellingPrice = 'Giá bán không được để trống';
+
+    const imgErr = validateImageUrl(imageUrl);
+    if (imgErr) errors.imageUrl = imgErr;
+
+    setFieldErrors(errors);
+
+    // 1. Kiểm tra trường để trống (Mục 45)
+    if (!trimmedBarcode || !trimmedName || !categoryId || !trimmedUnit || !costPrice || !sellingPrice) {
+      setProductModal({ type: 'empty_fields_create' });
+      return;
+    }
+
+    // 2. Kiểm tra trùng mã vạch hoặc tên (Mục 44)
+    const isDuplicateBarcode = products.some((p) => p.barcode === trimmedBarcode);
+    const isDuplicateName = products.some(
+      (p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+
+    if (isDuplicateBarcode || isDuplicateName) {
+      let msg = 'Tên sản phẩm đã tồn tại. Mã vạch đã tồn tại trong hệ thống. Vui lòng sử dụng tên và mã vạch khác.';
+      if (isDuplicateBarcode && !isDuplicateName) {
+        msg = 'Mã vạch đã tồn tại trong hệ thống. Vui lòng sử dụng mã vạch khác.';
+        setFieldErrors((prev) => ({ ...prev, barcode: 'Mã vạch đã tồn tại' }));
+      } else if (isDuplicateName && !isDuplicateBarcode) {
+        msg = 'Tên sản phẩm đã tồn tại trong hệ thống. Vui lòng sử dụng tên khác.';
+        setFieldErrors((prev) => ({ ...prev, name: 'Tên sản phẩm đã tồn tại' }));
+      } else {
+        setFieldErrors((prev) => ({ ...prev, barcode: 'Mã vạch đã tồn tại', name: 'Tên sản phẩm đã tồn tại' }));
+      }
+      setProductModal({ type: 'duplicate_create', message: msg });
+      return;
+    }
+
+    // 3. Kiểm tra tính hợp lệ giá (Mục 46)
+    if (isNaN(sp) || sp <= 0 || isNaN(cp) || cp <= 0) {
+      setProductModal({ type: 'invalid_info_create' });
+      return;
+    }
+
+    if (imgErr) {
+      setImageUrlError(imgErr);
+      return;
+    }
+
+    createMutation.mutate();
+  };
+
+  const handleSubmitEdit = () => {
+    if (!currentProduct) return;
+    const errors: typeof fieldErrors = {};
+    const trimmedName = name.trim();
+    const trimmedUnit = unit.trim();
+    const sp = Number(sellingPrice);
+    const cp = Number(costPrice);
+
+    if (!trimmedName) errors.name = 'Tên sản phẩm không được để trống';
+    if (!categoryId) errors.categoryId = 'Vui lòng chọn danh mục';
+    if (!trimmedUnit) errors.unit = 'Đơn vị tính không được để trống';
+    if (!costPrice) errors.costPrice = 'Giá nhập không được để trống';
+    if (!sellingPrice) errors.sellingPrice = 'Giá bán không được để trống';
+
+    const imgErr = validateImageUrl(imageUrl);
+    if (imgErr) errors.imageUrl = imgErr;
+
+    setFieldErrors(errors);
+
+    // 1. Kiểm tra trường chưa hợp lệ / để trống / giá không hợp lệ (Mục 48)
+    if (!trimmedName || !categoryId || !trimmedUnit || !costPrice || !sellingPrice || isNaN(sp) || sp <= 0 || isNaN(cp) || cp <= 0) {
+      setProductModal({ type: 'invalid_info_edit' });
+      return;
+    }
+
+    // 2. Kiểm tra trùng tên sản phẩm (Mục 49)
+    const isDuplicateName = products.some(
+      (p) => p.barcode !== currentProduct.barcode && p.name.trim().toLowerCase() === trimmedName.toLowerCase()
+    );
+    if (isDuplicateName) {
+      setFieldErrors((prev) => ({ ...prev, name: 'Tên sản phẩm đã tồn tại' }));
+      setProductModal({ type: 'duplicate_edit' });
+      return;
+    }
+
+    if (imgErr) {
+      setImageUrlError(imgErr);
+      return;
+    }
+
+    updateMutation.mutate();
+  };
 
   // --------------------------------------------------------------------------
   // MÀN HÌNH TẠO SẢN PHẨM (Figma 3.2.1)
@@ -327,7 +428,7 @@ export const ProductsPage: React.FC = () => {
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-[var(--color-primary)]">Tạo sản phẩm</h1>
+            <h1 className="text-2xl font-bold text-[#024E82]">Tạo sản phẩm</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               Nhập đầy đủ thông tin sản phẩm mới. Tồn kho ban đầu mặc định bằng 0.
             </p>
@@ -344,7 +445,7 @@ export const ProductsPage: React.FC = () => {
         <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
           <h2 className="text-base font-bold text-slate-800">Thông tin chung</h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Mã vạch *
@@ -361,6 +462,9 @@ export const ProductsPage: React.FC = () => {
                     } else {
                       setBarcodeError('');
                     }
+                    if (fieldErrors.barcode) {
+                      setFieldErrors((prev) => ({ ...prev, barcode: undefined }));
+                    }
                   }}
                   onBlur={() => {
                     if (barcode) {
@@ -369,16 +473,16 @@ export const ProductsPage: React.FC = () => {
                   }}
                   placeholder="Nhập hoặc quét mã vạch 13 chữ số"
                   className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none pr-10 ${
-                    barcodeError
+                    barcodeError || fieldErrors.barcode
                       ? 'border-danger focus:border-danger'
-                      : 'border-slate-200 focus:border-[var(--color-primary)]'
+                      : 'border-slate-200 focus:border-[#024E82]'
                   }`}
                 />
                 <BarcodeIcon className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
               </div>
-              {barcodeError && (
+              {(barcodeError || fieldErrors.barcode) && (
                 <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
-                  {barcodeError}
+                  {barcodeError || fieldErrors.barcode}
                 </p>
               )}
             </div>
@@ -390,10 +494,22 @@ export const ProductsPage: React.FC = () => {
               <input
                 type="text"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (fieldErrors.name) {
+                    setFieldErrors((prev) => ({ ...prev, name: undefined }));
+                  }
+                }}
                 placeholder="Nhập tên sản phẩm"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.name
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.name && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.name}</p>
+              )}
             </div>
 
             <div>
@@ -402,8 +518,17 @@ export const ProductsPage: React.FC = () => {
               </label>
               <select
                 value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)] bg-white"
+                onChange={(e) => {
+                  setCategoryId(e.target.value);
+                  if (fieldErrors.categoryId) {
+                    setFieldErrors((prev) => ({ ...prev, categoryId: undefined }));
+                  }
+                }}
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none bg-white ${
+                  fieldErrors.categoryId
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               >
                 <option value="">Chọn danh mục</option>
                 {categories.map((c) => (
@@ -412,6 +537,9 @@ export const ProductsPage: React.FC = () => {
                   </option>
                 ))}
               </select>
+              {fieldErrors.categoryId && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.categoryId}</p>
+              )}
             </div>
 
             <div>
@@ -421,40 +549,80 @@ export const ProductsPage: React.FC = () => {
               <input
                 type="text"
                 value={unit}
-                onChange={(e) => setUnit(e.target.value)}
+                onChange={(e) => {
+                  setUnit(e.target.value);
+                  if (fieldErrors.unit) {
+                    setFieldErrors((prev) => ({ ...prev, unit: undefined }));
+                  }
+                }}
                 placeholder="Nhập đơn vị tính"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.unit
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.unit && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.unit}</p>
+              )}
             </div>
 
+            {/* Mục 43: Bỏ nút tăng giảm spinner giá nhập */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Giá nhập (VND) *
               </label>
               <input
-                type="number"
-                min="0"
-                step="1000"
+                type="text"
+                inputMode="numeric"
                 value={costPrice}
-                onChange={(e) => setCostPrice(e.target.value)}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/\D/g, '');
+                  const clean = raw.replace(/^0+(?=\d)/, '');
+                  setCostPrice(clean);
+                  if (fieldErrors.costPrice) {
+                    setFieldErrors((prev) => ({ ...prev, costPrice: undefined }));
+                  }
+                }}
                 placeholder="Nhập giá nhập"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.costPrice
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.costPrice && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.costPrice}</p>
+              )}
             </div>
 
+            {/* Mục 43: Bỏ nút tăng giảm spinner giá bán */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Giá bán (VND) *
               </label>
               <input
-                type="number"
-                min="0"
-                step="1000"
+                type="text"
+                inputMode="numeric"
                 value={sellingPrice}
-                onChange={(e) => setSellingPrice(e.target.value)}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/\D/g, '');
+                  const clean = raw.replace(/^0+(?=\d)/, '');
+                  setSellingPrice(clean);
+                  if (fieldErrors.sellingPrice) {
+                    setFieldErrors((prev) => ({ ...prev, sellingPrice: undefined }));
+                  }
+                }}
                 placeholder="Nhập giá bán"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.sellingPrice
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.sellingPrice && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.sellingPrice}</p>
+              )}
             </div>
 
             <div>
@@ -494,7 +662,7 @@ export const ProductsPage: React.FC = () => {
                 className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
                   imageUrlError
                     ? 'border-danger focus:border-danger'
-                    : 'border-slate-200 focus:border-[var(--color-primary)]'
+                    : 'border-slate-200 focus:border-[#024E82]'
                 }`}
               />
               {imageUrlError && (
@@ -517,22 +685,107 @@ export const ProductsPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => createMutation.mutate()}
+                onClick={handleSubmitCreate}
                 disabled={createMutation.isPending}
-                className="px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
+                className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70 transition-colors"
               >
                 {createMutation.isPending ? 'Đang lưu...' : 'Lưu'}
               </button>
             </div>
           </div>
-
-          {formError && (
-            <div className="p-3 bg-primary-soft border border-[var(--border)] rounded-lg text-xs text-primary font-medium">
-              {formError}
-            </div>
-          )}
         </div>
-        {formNoticeModal}
+
+        {/* CÁC POPUP MỤC 44-47 */}
+        {productModal?.type === 'duplicate_create' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+                <X className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Không thể tạo sản phẩm</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                {productModal.message}
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => setProductModal(null)}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Kiểm tra lại
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {productModal?.type === 'empty_fields_create' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+                <X className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Vui lòng nhập đầy đủ thông tin</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                Mã vạch, tên sản phẩm, danh mục, đơn vị tính, giá nhập và giá bán là thông tin bắt buộc.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => setProductModal(null)}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Kiểm tra lại
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {productModal?.type === 'invalid_info_create' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+                <X className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Thông tin sản phẩm chưa hợp lệ</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                Giá nhập phải là số dương. Giá bán phải là số dương. Vui lòng chọn danh mục hợp lệ và nhập đơn vị tính.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => setProductModal(null)}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Kiểm tra lại
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {productModal?.type === 'success_create' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-emerald-300 flex items-center justify-center text-emerald-500 mb-4">
+                <Check className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Tạo thông tin sản phẩm thành công</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                {productModal.product.name} đã được thêm vào danh sách. Mã vạch: {productModal.product.barcode} · Tồn kho: {productModal.product.stock}.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => {
+                    setProductModal(null);
+                    handleBackToList();
+                  }}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -545,7 +798,7 @@ export const ProductsPage: React.FC = () => {
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-[var(--color-primary)]">Sửa thông tin sản phẩm</h1>
+            <h1 className="text-2xl font-bold text-[#024E82]">Sửa thông tin sản phẩm</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               Cập nhật thông tin sản phẩm. Mã vạch và tồn kho không được chỉnh sửa.
             </p>
@@ -562,7 +815,7 @@ export const ProductsPage: React.FC = () => {
         <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
           <h2 className="text-base font-bold text-slate-800">Thông tin chung</h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-10">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-6">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Mã vạch *
@@ -572,19 +825,10 @@ export const ProductsPage: React.FC = () => {
                   type="text"
                   value={currentProduct.barcode}
                   readOnly
-                  className={`w-full px-3.5 py-2.5 rounded-lg border bg-slate-50 text-sm text-slate-600 pr-10 cursor-not-allowed font-mono ${
-                    !/^\d{13}$/.test(currentProduct.barcode)
-                      ? 'border-danger'
-                      : 'border-slate-200'
-                  }`}
+                  className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 bg-slate-50 text-sm text-slate-600 pr-10 cursor-not-allowed font-mono"
                 />
                 <Lock className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
               </div>
-              {!/^\d{13}$/.test(currentProduct.barcode) && (
-                <p className="mt-1 text-xs text-danger font-medium flex items-center gap-1">
-                  Mã vạch phải gồm đúng 13 chữ số.
-                </p>
-              )}
             </div>
 
             <div>
@@ -594,10 +838,22 @@ export const ProductsPage: React.FC = () => {
               <input
                 type="text"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (fieldErrors.name) {
+                    setFieldErrors((prev) => ({ ...prev, name: undefined }));
+                  }
+                }}
                 placeholder="Nhập tên sản phẩm"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.name
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.name && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.name}</p>
+              )}
             </div>
 
             <div>
@@ -606,8 +862,17 @@ export const ProductsPage: React.FC = () => {
               </label>
               <select
                 value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)] bg-white"
+                onChange={(e) => {
+                  setCategoryId(e.target.value);
+                  if (fieldErrors.categoryId) {
+                    setFieldErrors((prev) => ({ ...prev, categoryId: undefined }));
+                  }
+                }}
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none bg-white ${
+                  fieldErrors.categoryId
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               >
                 <option value="">Chọn danh mục</option>
                 {categories.map((c) => (
@@ -616,6 +881,9 @@ export const ProductsPage: React.FC = () => {
                   </option>
                 ))}
               </select>
+              {fieldErrors.categoryId && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.categoryId}</p>
+              )}
             </div>
 
             <div>
@@ -625,40 +893,80 @@ export const ProductsPage: React.FC = () => {
               <input
                 type="text"
                 value={unit}
-                onChange={(e) => setUnit(e.target.value)}
+                onChange={(e) => {
+                  setUnit(e.target.value);
+                  if (fieldErrors.unit) {
+                    setFieldErrors((prev) => ({ ...prev, unit: undefined }));
+                  }
+                }}
                 placeholder="Nhập đơn vị tính"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.unit
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.unit && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.unit}</p>
+              )}
             </div>
 
+            {/* Mục 43: Bỏ nút tăng giảm spinner giá nhập */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Giá nhập (VND) *
               </label>
               <input
-                type="number"
-                min="0"
-                step="1000"
+                type="text"
+                inputMode="numeric"
                 value={costPrice}
-                onChange={(e) => setCostPrice(e.target.value)}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/\D/g, '');
+                  const clean = raw.replace(/^0+(?=\d)/, '');
+                  setCostPrice(clean);
+                  if (fieldErrors.costPrice) {
+                    setFieldErrors((prev) => ({ ...prev, costPrice: undefined }));
+                  }
+                }}
                 placeholder="Nhập giá nhập"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.costPrice
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.costPrice && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.costPrice}</p>
+              )}
             </div>
 
+            {/* Mục 43: Bỏ nút tăng giảm spinner giá bán */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                 Giá bán (VND) *
               </label>
               <input
-                type="number"
-                min="0"
-                step="1000"
+                type="text"
+                inputMode="numeric"
                 value={sellingPrice}
-                onChange={(e) => setSellingPrice(e.target.value)}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/\D/g, '');
+                  const clean = raw.replace(/^0+(?=\d)/, '');
+                  setSellingPrice(clean);
+                  if (fieldErrors.sellingPrice) {
+                    setFieldErrors((prev) => ({ ...prev, sellingPrice: undefined }));
+                  }
+                }}
                 placeholder="Nhập giá bán"
-                className="w-full px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)]"
+                className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
+                  fieldErrors.sellingPrice
+                    ? 'border-danger focus:border-danger'
+                    : 'border-slate-200 focus:border-[#024E82]'
+                }`}
               />
+              {fieldErrors.sellingPrice && (
+                <p className="mt-1 text-xs text-danger font-medium">{fieldErrors.sellingPrice}</p>
+              )}
             </div>
 
             <div>
@@ -698,7 +1006,7 @@ export const ProductsPage: React.FC = () => {
                 className={`w-full px-3.5 py-2.5 rounded-lg border text-sm focus:outline-none ${
                   imageUrlError
                     ? 'border-danger focus:border-danger'
-                    : 'border-slate-200 focus:border-[var(--color-primary)]'
+                    : 'border-slate-200 focus:border-[#024E82]'
                 }`}
               />
               {imageUrlError && (
@@ -721,22 +1029,85 @@ export const ProductsPage: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => updateMutation.mutate()}
+                onClick={handleSubmitEdit}
                 disabled={updateMutation.isPending}
-                className="px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
+                className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70 transition-colors"
               >
                 {updateMutation.isPending ? 'Đang lưu...' : 'Lưu'}
               </button>
             </div>
           </div>
-
-          {formError && (
-            <div className="p-3 bg-primary-soft border border-[var(--border)] rounded-lg text-xs text-primary font-medium">
-              {formError}
-            </div>
-          )}
         </div>
-        {formNoticeModal}
+
+        {/* CÁC POPUP MỤC 48-50, 53 */}
+        {productModal?.type === 'invalid_info_edit' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+                <X className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Thông tin sản phẩm chưa hợp lệ</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                Tên sản phẩm không được để trống. Giá nhập và giá bán phải là số dương. Vui lòng chọn danh mục hợp lệ và nhập đơn vị tính.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => setProductModal(null)}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Kiểm tra lại
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {productModal?.type === 'duplicate_edit' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+                <X className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Tên sản phẩm đã tồn tại!</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                Vui lòng nhập tên sản phẩm khác. Thông tin gốc chưa bị thay đổi.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => setProductModal(null)}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Kiểm tra lại
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {productModal?.type === 'success_edit' && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+            <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-full border border-emerald-300 flex items-center justify-center text-emerald-500 mb-4">
+                <Check className="w-8 h-8 stroke-[2.5]" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 mb-2">Sửa thông tin sản phẩm thành công</h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+                Đã cập nhật {productModal.product.name}. Giá bán: {productModal.product.price.toLocaleString('vi-VN')} VND. Mã vạch và tồn kho không thay đổi.
+              </p>
+              <div className="w-full flex justify-end">
+                <button
+                  onClick={() => {
+                    setProductModal(null);
+                    handleBackToList();
+                  }}
+                  className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white text-sm font-semibold rounded-lg transition-colors"
+                >
+                  Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -749,14 +1120,15 @@ export const ProductsPage: React.FC = () => {
       <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-[var(--color-primary)]">Thông tin chi tiết sản phẩm</h1>
+            <h1 className="text-2xl font-bold text-[#024E82]">Thông tin chi tiết sản phẩm</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               Xem đầy đủ thông tin sản phẩm. Dữ liệu không thay đổi.
             </p>
           </div>
+          {/* Mục 41: Nút quay lại màu xanh biển */}
           <button
             onClick={handleBackToList}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium rounded-lg text-sm shadow-2xs"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-[#024E82] font-semibold rounded-lg text-sm shadow-2xs transition-colors"
           >
             <ArrowLeft className="w-4 h-4" />
             Quay lại
@@ -896,7 +1268,7 @@ export const ProductsPage: React.FC = () => {
                     href={currentProduct.image_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-[var(--color-primary)] hover:underline break-all"
+                    className="text-xs text-[#024E82] hover:underline break-all"
                   >
                     {currentProduct.image_url}
                   </a>
@@ -909,7 +1281,7 @@ export const ProductsPage: React.FC = () => {
             <button
               type="button"
               onClick={handleBackToList}
-              className="px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm"
+              className="px-6 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white font-medium rounded-lg text-sm shadow-sm transition-colors"
             >
               Đóng
             </button>
@@ -927,7 +1299,7 @@ export const ProductsPage: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--color-primary)]">Sản phẩm</h1>
+          <h1 className="text-2xl font-bold text-[#024E82]">Sản phẩm</h1>
           <p className="text-sm text-slate-500 mt-0.5">
             Cho xem, tạo mới, cập nhật và xóa thông tin sản phẩm trực tiếp trên phần mềm.
           </p>
@@ -936,7 +1308,7 @@ export const ProductsPage: React.FC = () => {
         {isOwner && (
           <button
             onClick={handleOpenCreate}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white font-medium rounded-lg text-sm shadow-sm transition-colors"
           >
             <Plus className="w-4 h-4" />
             Tạo sản phẩm
@@ -944,9 +1316,9 @@ export const ProductsPage: React.FC = () => {
         )}
       </div>
 
-      {/* Thanh tìm kiếm & lọc */}
+      {/* Mục 40: Rút ngắn thanh tìm kiếm sản phẩm & đồng bộ màu chữ */}
       <div className="flex flex-col sm:flex-row gap-3">
-        <div className="flex-1 relative">
+        <div className="w-full sm:w-80 relative">
           <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
           <input
             type="text"
@@ -959,7 +1331,7 @@ export const ProductsPage: React.FC = () => {
               }
             }}
             placeholder="Tìm theo tên sản phẩm..."
-            className="w-full pl-10 pr-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)] bg-white"
+            className="w-full pl-10 pr-3.5 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:border-[#024E82] bg-white"
           />
         </div>
 
@@ -969,11 +1341,11 @@ export const ProductsPage: React.FC = () => {
             setSelectedCatId(e.target.value);
             setPage(1);
           }}
-          className="px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:border-[var(--color-primary)] bg-white shadow-2xs min-w-48"
+          className="px-3.5 py-2.5 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:border-[#024E82] bg-white shadow-2xs min-w-48"
         >
-          <option value="">Tìm kiếm theo danh mục</option>
+          <option value="" className="text-slate-400">Tìm kiếm theo danh mục</option>
           {categories.map((c) => (
-            <option key={c.id} value={c.id}>
+            <option key={c.id} value={c.id} className="text-slate-700">
               {c.name}
             </option>
           ))}
@@ -984,7 +1356,7 @@ export const ProductsPage: React.FC = () => {
             setSearchQuery(searchInput);
             setPage(1);
           }}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm transition-colors"
+          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#024E82] hover:bg-blue-900 text-white font-medium rounded-lg text-sm shadow-sm transition-colors"
         >
           <Search className="w-4 h-4" />
           Tìm kiếm
@@ -1002,38 +1374,40 @@ export const ProductsPage: React.FC = () => {
 
       {!isLoading && !isError && (
         <>
-          {filteredProducts.length === 0 ? (
-            <EmptyState
-              title="Không tìm thấy sản phẩm"
-              description="Không có sản phẩm nào khớp với tìm kiếm của bạn."
-            />
-          ) : (
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              {/* Header của bảng */}
-              <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <span className="font-semibold text-slate-800 text-sm">Danh sách sản phẩm</span>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-soft text-[var(--color-primary)]">
-                    {filteredProducts.length} sản phẩm
-                  </span>
-                </div>
-                <span className="text-xs text-slate-500">Giá bán: VND</span>
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            {/* Header của bảng */}
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <span className="font-semibold text-slate-800 text-sm">Danh sách sản phẩm</span>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-soft text-[#024E82]">
+                  {filteredProducts.length} sản phẩm
+                </span>
               </div>
+              <span className="text-xs text-slate-500">Giá bán: VND</span>
+            </div>
 
-              {/* Bảng sản phẩm */}
-              <div className="overflow-x-auto">
-                <table className="ui-table w-full text-left text-sm">
-                  <thead className="bg-[var(--surface-muted)] text-slate-500 text-xs uppercase font-medium">
+            {/* Bảng sản phẩm */}
+            <div className="overflow-x-auto">
+              <table className="ui-table w-full text-left text-sm">
+                <thead className="bg-[var(--surface-muted)] text-slate-500 text-xs uppercase font-medium">
+                  <tr>
+                    <th className="py-3 px-4">Mã vạch</th>
+                    <th className="py-3 px-4">Tên sản phẩm</th>
+                    <th className="py-3 px-4 text-right">Giá bán</th>
+                    <th className="py-3 px-4 text-center">Tồn kho</th>
+                    <th className="py-3 px-4 text-center">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {/* Mục 42: Màn hình khi không tìm thấy sản phẩm */}
+                  {filteredProducts.length === 0 ? (
                     <tr>
-                      <th className="py-3 px-4">Mã vạch</th>
-                      <th className="py-3 px-4">Tên sản phẩm</th>
-                      <th className="py-3 px-4 text-right">Giá bán</th>
-                      <th className="py-3 px-4 text-center">Tồn kho</th>
-                      <th className="py-3 px-4 text-center">Thao tác</th>
+                      <td colSpan={5} className="py-24 text-center text-slate-400 text-sm">
+                        Không tìm thấy sản phẩm phù hợp!
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {pagedProducts.map((p) => (
+                  ) : (
+                    pagedProducts.map((p) => (
                       <tr key={p.barcode} className="hover:bg-[var(--color-primary-soft)]/50 transition-colors">
                         <td className="py-3.5 px-4 font-mono text-slate-500 text-xs">
                           {p.barcode}
@@ -1041,7 +1415,7 @@ export const ProductsPage: React.FC = () => {
                         <td className="py-3.5 px-4">
                           <button
                             onClick={() => handleOpenDetail(p)}
-                            className="font-medium text-[var(--color-primary)] hover:underline text-left"
+                            className="font-medium text-[#024E82] hover:underline text-left"
                           >
                             {p.name}
                           </button>
@@ -1056,7 +1430,7 @@ export const ProductsPage: React.FC = () => {
                           <div className="flex items-center justify-center gap-3 text-xs">
                             <button
                               onClick={() => handleOpenDetail(p)}
-                              className="inline-flex items-center gap-1 text-[var(--color-primary)] hover:underline"
+                              className="inline-flex items-center gap-1 text-[#024E82] hover:underline"
                             >
                               <Eye className="w-3.5 h-3.5" /> Xem
                             </button>
@@ -1065,12 +1439,12 @@ export const ProductsPage: React.FC = () => {
                               <>
                                 <button
                                   onClick={() => handleOpenEdit(p)}
-                                  className="inline-flex items-center gap-1 text-slate-600 hover:text-[var(--color-primary)] hover:underline"
+                                  className="inline-flex items-center gap-1 text-slate-600 hover:text-[#024E82] hover:underline"
                                 >
                                   <Edit2 className="w-3.5 h-3.5" /> Sửa
                                 </button>
                                 <button
-                                  onClick={() => setDeleteProduct(p)}
+                                  onClick={() => handleDeleteClick(p)}
                                   className="inline-flex items-center gap-1 text-danger hover:underline"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" /> Xóa
@@ -1080,50 +1454,60 @@ export const ProductsPage: React.FC = () => {
                           </div>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
 
-              {/* Phân trang */}
-              <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <span>
-                  Hiển thị {(page - 1) * PAGE_SIZE + 1}–
-                  {Math.min(page * PAGE_SIZE, filteredProducts.length)} trong {filteredProducts.length} sản phẩm
-                </span>
+            {/* Phân trang */}
+            <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+              <span>
+                {filteredProducts.length === 0
+                  ? 'Hiển thị 0 trong 0 sản phẩm'
+                  : `Hiển thị ${(page - 1) * PAGE_SIZE + 1}–${Math.min(
+                      page * PAGE_SIZE,
+                      filteredProducts.length
+                    )} trong ${filteredProducts.length} sản phẩm`}
+              </span>
 
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page === 1}
-                    className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                {filteredProducts.length === 0 ? (
+                  <button className="w-6 h-6 rounded text-xs font-medium bg-[#024E82] text-white">
+                    1
                   </button>
-                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
+                ) : (
+                  Array.from({ length: totalPages }, (_, i) => i + 1).map((pg) => (
                     <button
                       key={pg}
                       onClick={() => setPage(pg)}
                       className={`w-6 h-6 rounded text-xs font-medium transition-colors ${
                         page === pg
-                          ? 'bg-[var(--color-primary)] text-white'
-                        : 'hover:bg-[var(--color-primary-soft)] text-slate-700'
+                          ? 'bg-[#024E82] text-white'
+                          : 'hover:bg-[var(--color-primary-soft)] text-slate-700'
                       }`}
                     >
                       {pg}
                     </button>
-                  ))}
-                  <button
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={page === totalPages}
-                    className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
+                  ))
+                )}
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages || filteredProducts.length === 0}
+                  className="p-1 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
             </div>
-          )}
+          </div>
 
           {/* Ghi chú chân trang theo Figma */}
           <div className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -1133,19 +1517,73 @@ export const ProductsPage: React.FC = () => {
         </>
       )}
 
-      <ConfirmModal
-        isOpen={!!deleteProduct}
-        onClose={() => setDeleteProduct(null)}
-        onConfirm={() => deleteProduct && deleteMutation.mutate(deleteProduct.barcode)}
-        title="Xác nhận xóa sản phẩm?"
-        message={
-          deleteProduct
-            ? `${deleteProduct.name} (${deleteProduct.barcode}) sẽ bị xóa khỏi danh sách. Sản phẩm đã được tham chiếu bởi hóa đơn không thể xóa.`
-            : ''
-        }
-        confirmText="Xóa sản phẩm"
-        isLoading={deleteMutation.isPending}
-      />
+      {/* MODAL MỤC 51: XÁC NHẬN XÓA KHI CHƯA THAM CHIẾU (ẢNH 86) */}
+      {deleteProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center space-y-4">
+            <div className="w-14 h-14 rounded-full bg-red-50 text-red-400 flex items-center justify-center">
+              <Trash2 className="w-7 h-7" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Bạn có chắc chắn muốn xóa sản phẩm này?</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Thao tác này sẽ xóa thông tin sản phẩm khỏi danh sách và không thể hoàn tác.
+              </p>
+            </div>
+
+            <div className="w-full bg-slate-50 p-4 rounded-xl text-left space-y-1">
+              <p className="font-bold text-slate-900 text-sm">{deleteProduct.name}</p>
+              <p className="text-xs text-slate-500 font-mono">Mã vạch: {deleteProduct.barcode}</p>
+              <p className="text-xs text-slate-500">
+                Tồn kho: {deleteProduct.stock_quantity} {deleteProduct.unit} · Chưa được tham chiếu bởi đơn hàng
+              </p>
+            </div>
+
+            <div className="w-full bg-red-50 text-[#E12B2B] text-xs p-3 rounded-lg text-left">
+              Chỉ có thể xóa sản phẩm chưa được tham chiếu bởi bất kỳ đơn hàng nào trong hệ thống.
+            </div>
+
+            <div className="w-full flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDeleteProduct(null)}
+                className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition-colors"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(deleteProduct.barcode)}
+                disabled={deleteMutation.isPending}
+                className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Đang xóa...' : 'Đồng ý'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL MỤC 52: CHẶN XÓA KHI ĐÃ CÓ ĐƠN HÀNG THAM CHIẾU (ẢNH 87) */}
+      {referencedProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl flex flex-col items-center text-center">
+            <div className="w-16 h-16 rounded-full border border-red-200 flex items-center justify-center text-red-500 mb-4">
+              <X className="w-8 h-8 stroke-[2.5]" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-800 mb-2">Không thể xóa sản phẩm này</h3>
+            <p className="text-xs sm:text-sm text-slate-500 leading-relaxed mb-6">
+              {referencedProduct.product.name} · Mã vạch: {referencedProduct.product.barcode} · Tồn kho: {referencedProduct.product.stock_quantity} {referencedProduct.product.unit}. Sản phẩm đã được tham chiếu bởi đơn hàng {referencedProduct.invoiceCode} nên không thể xóa. Dữ liệu được giữ nguyên.
+            </p>
+            <div className="w-full flex justify-end">
+              <button
+                onClick={() => setReferencedProduct(null)}
+                className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-lg transition-colors"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

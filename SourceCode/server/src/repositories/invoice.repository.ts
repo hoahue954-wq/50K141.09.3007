@@ -354,13 +354,28 @@ export const invoiceRepository = {
   },
 
   async topSellingProducts(start: Date, end: Date) {
-    return prisma.invoiceDetail.groupBy({
+    const grouped = await prisma.invoiceDetail.groupBy({
       by: ['productId', 'productBarcode', 'productName'],
       where: { invoice: { isDeleted: false, createdAt: { gte: start, lt: end } } },
       _sum: { quantity: true, lineTotal: true },
       orderBy: { _sum: { quantity: 'desc' } },
       take: 5,
     });
+
+    const barcodes = grouped.map((g) => g.productBarcode);
+    const products = barcodes.length
+      ? await prisma.product.findMany({
+          where: { barcode: { in: barcodes } },
+          select: { barcode: true, unit: true, imageUrl: true },
+        })
+      : [];
+    const productMap = new Map(products.map((p) => [p.barcode, p]));
+
+    return grouped.map((item) => ({
+      ...item,
+      unit: productMap.get(item.productBarcode)?.unit || 'sản phẩm',
+      imageUrl: productMap.get(item.productBarcode)?.imageUrl || null,
+    }));
   },
 
   async listWithQuery(query: InvoiceListQuery) {

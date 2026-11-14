@@ -899,7 +899,7 @@ export const DisposalsPage: React.FC = () => {
                     <th className="py-3 px-4 font-medium">Ngày lập</th>
                     <th className="py-3 px-4 font-medium">Người lập</th>
                     <th className="py-3 px-4 font-medium">Lý do hủy</th>
-                    {isOwner && <th className="py-3 px-4 font-medium text-right">Tổng giá trị</th>}
+                    <th className="py-3 px-4 font-medium text-right">Tổng giá trị</th>
                     <th className="py-3 px-4 font-medium text-center">Trạng thái</th>
                     <th className="py-3 px-4 font-medium text-center">Thao tác</th>
                   </tr>
@@ -933,11 +933,9 @@ export const DisposalsPage: React.FC = () => {
                         <td className="py-3.5 px-4 text-slate-600 max-w-xs truncate">
                           {s.reason}
                         </td>
-                        {isOwner && (
-                          <td className="py-3.5 px-4 text-right font-bold text-slate-900">
-                            {formatVND(totalVal)}
-                          </td>
-                        )}
+                        <td className="py-3.5 px-4 text-right font-bold text-slate-900">
+                          {formatVND(totalVal)}
+                        </td>
                         <td className="py-3.5 px-4 text-center">
                           <span
                             className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full ${
@@ -952,29 +950,8 @@ export const DisposalsPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-center">
-                          <div className="flex items-center justify-center gap-2 text-xs">
-                            <button
-                              onClick={() => {
-                                setSelectedSlip(s);
-                                setMode('detail');
-                              }}
-                              className="inline-flex items-center gap-1 text-[var(--color-primary)] hover:underline"
-                            >
-                              <Eye className="w-3.5 h-3.5" /> Xem
-                            </button>
-
-                            {isOwner && isPending && (
-                              <button
-                                onClick={() => {
-                                  setSelectedSlip(s);
-                                  setMode('detail');
-                                }}
-                                className="inline-flex items-center gap-1 text-[var(--color-success)] hover:underline font-semibold"
-                              >
-                                <Check className="w-3.5 h-3.5" /> Duyệt
-                              </button>
-                            )}
-                            {isOwner && s.status !== 'approved' && (
+                          <div className="flex items-center justify-center gap-2.5 text-xs">
+                            {isOwner && isPending ? (
                               <>
                                 <button
                                   onClick={() => handleOpenEdit(s)}
@@ -988,7 +965,23 @@ export const DisposalsPage: React.FC = () => {
                                 >
                                   <Trash2 className="w-3.5 h-3.5" /> Xóa
                                 </button>
+                                <button
+                                  onClick={() => setApproveSlipId(s.id)}
+                                  className="inline-flex items-center gap-1 text-[var(--color-success)] hover:underline font-semibold"
+                                >
+                                  <Check className="w-3.5 h-3.5" /> Duyệt
+                                </button>
                               </>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setSelectedSlip(s);
+                                  setMode('detail');
+                                }}
+                                className="inline-flex items-center gap-1 text-[var(--color-primary)] hover:underline"
+                              >
+                                <Eye className="w-3.5 h-3.5" /> Xem
+                              </button>
                             )}
                           </div>
                         </td>

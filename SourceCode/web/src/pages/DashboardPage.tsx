@@ -1,14 +1,23 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { formatVND, formatDate, formatDateTime } from '../utils/format';
+import { formatVND, formatDate } from '../utils/format';
 import { useAuth } from '../context/AuthContext';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { ErrorState } from '../components/common/ErrorState';
+import { Check, Package } from 'lucide-react';
 
 export const DashboardPage: React.FC = () => {
   const { isOwner, user } = useAuth();
   const [currentPage, setCurrentPage] = useState(1);
+  const [showLoginSuccessModal, setShowLoginSuccessModal] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem('show_login_success') === 'true') {
+      setShowLoginSuccessModal(true);
+      sessionStorage.removeItem('show_login_success');
+    }
+  }, []);
 
   const {
     data: stats,
@@ -24,6 +33,11 @@ export const DashboardPage: React.FC = () => {
   const { data: invoices = [] } = useQuery({
     queryKey: ['invoices'],
     queryFn: () => api.invoices.list(),
+  });
+
+  const { data: products = [] } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => api.products.list(),
   });
 
   if (isStatsLoading) {
@@ -63,69 +77,65 @@ export const DashboardPage: React.FC = () => {
 
       {/* 2 Thẻ lớn trên cùng theo đúng layout Figma */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {/* Thẻ 1: Doanh thu hôm nay hoặc doanh thu trong ca */}
+        {/* Thẻ 1: Doanh thu */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs">
           <p className="text-xs font-semibold text-slate-500">
-            {isOwner ? 'Doanh thu hôm nay' : 'Doanh thu ca bán của bạn'}
+            {isOwner ? 'Doanh thu hôm nay' : 'Doanh thu của bạn hôm nay'}
           </p>
           <p className="text-3xl md:text-4xl font-black text-slate-900 mt-2">
             {formatVND(isOwner ? ownerStats?.todayRevenue ?? 0 : staffShift?.sales_amount ?? 0)}
           </p>
-          {isOwner && ownerStats && (
-            <div className="mt-4 grid grid-cols-3 gap-2 text-[11px] text-slate-500">
-              <p>Tiền mặt <span className="block font-semibold text-slate-800">{formatVND(ownerStats.todayCash)}</span></p>
-              <p>Chuyển khoản <span className="block font-semibold text-slate-800">{formatVND(ownerStats.todayTransfer)}</span></p>
-              <p>Ghi nợ <span className="block font-semibold text-slate-800">{formatVND(ownerStats.todayDebt)}</span></p>
-            </div>
-          )}
-          {!isOwner && staffShift && (
-            <div className="mt-4 space-y-1 text-[11px] text-slate-500">
-              <p>Ngày: {formatDate(isStaffDashboard ? stats.date : new Date())}</p>
-              <p>
-                Ca bán: {staffShift.first_sale_at ? formatDateTime(staffShift.first_sale_at) : 'Chưa có đơn'}
-                {staffShift.last_sale_at && ` – ${formatDateTime(staffShift.last_sale_at)}`}
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Thẻ 2: Hóa đơn đã bán */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs">
           <p className="text-xs font-semibold text-slate-500">
-            {isOwner ? 'Hóa đơn đã bán hôm nay' : 'Hóa đơn trong ca'}
+            Hóa đơn đã bán
           </p>
           <p className="text-3xl md:text-4xl font-black text-slate-900 mt-2">
             {isOwner ? ownerStats?.todayInvoiceCount ?? 0 : staffShift?.invoice_count ?? 0}
           </p>
-          {isOwner && ownerStats && (
-            <p className="mt-4 text-[11px] text-slate-500">
-              Sản phẩm cần nhập kho: <span className="font-semibold text-slate-800">{ownerStats.lowStockCount}</span>
-            </p>
-          )}
         </div>
       </div>
 
-      {/* Sản phẩm bán chạy chỉ hiển thị khi dashboard có dữ liệu từ server */}
+      {/* Sản phẩm bán chạy chỉ hiển thị cho Chủ cửa hàng */}
       {isOwner && ownerStats?.topSellingProducts && ownerStats.topSellingProducts.length > 0 && (
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
-          <h2 className="text-base font-bold text-slate-900">
+          <h2 className="text-base font-bold text-[var(--color-primary)]">
             Hàng hóa bán chạy nhất trong tuần
           </h2>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {ownerStats.topSellingProducts.map((product) => (
-              <div
-                key={product.barcode}
-                className="bg-[var(--surface-muted)] p-4 rounded-xl border border-slate-200/70 flex items-center gap-3"
-              >
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-slate-800 truncate">{product.name}</p>
-                  <span className="inline-block mt-1 text-[11px] font-bold text-[var(--color-primary)] bg-primary-soft px-2 py-0.5 rounded-md">
-                    {product.quantity} sản phẩm
-                  </span>
+            {ownerStats.topSellingProducts.map((product) => {
+              const matchedProduct = products.find(
+                (p) => p.barcode === product.barcode || p.name.toLowerCase() === product.name.toLowerCase()
+              );
+              const unit = (product as any).unit || matchedProduct?.unit || 'sản phẩm';
+              const imageUrl = (product as any).image_url || matchedProduct?.image_url;
+
+              return (
+                <div
+                  key={product.barcode}
+                  className="bg-[var(--surface-muted)] p-4 rounded-xl border border-slate-200/70 flex items-center gap-3.5"
+                >
+                  <div className="w-12 h-12 rounded-lg bg-white p-1 border border-slate-100 flex items-center justify-center shrink-0 overflow-hidden">
+                    {imageUrl ? (
+                      <img src={imageUrl} alt={product.name} className="w-full h-full object-contain" />
+                    ) : (
+                      <Package className="w-6 h-6 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-[var(--color-primary)] truncate" title={product.name}>
+                      {product.name}
+                    </p>
+                    <span className="inline-block mt-1 text-[11px] font-bold text-[var(--color-primary)] bg-primary-soft px-2.5 py-0.5 rounded-md">
+                      {product.quantity} {unit}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -161,17 +171,23 @@ export const DashboardPage: React.FC = () => {
                     </p>
                   </td>
                   <td className="py-3.5 px-6 font-medium text-slate-800">
-                    {inv.customer_name || 'Khách lẻ'}
+                    {inv.customer_name === 'Khách quen mẫu'
+                      ? 'Trần Văn Bình'
+                      : inv.customer_name || 'Khách lẻ'}
                   </td>
                   <td className="py-3.5 px-6 text-right font-black text-slate-900">
                     {formatVND(inv.total_amount)}
                   </td>
-                  <td className="py-3.5 px-6 text-center text-xs text-slate-600">
-                    {inv.payment_method === 'cash'
-                      ? 'Tiền mặt'
-                      : inv.payment_method === 'transfer'
-                        ? 'Chuyển khoản'
-                        : 'Ghi nợ'}
+                  <td className="py-3.5 px-6 text-center text-xs">
+                    {inv.status === 'unpaid' ? (
+                      <span className="font-semibold text-danger">Chưa thanh toán</span>
+                    ) : inv.payment_method === 'cash' ? (
+                      <span className="text-slate-600">Tiền mặt</span>
+                    ) : inv.payment_method === 'transfer' ? (
+                      <span className="text-slate-600">Chuyển khoản</span>
+                    ) : (
+                      <span className="font-semibold text-danger">Chưa thanh toán</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -209,6 +225,29 @@ export const DashboardPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Modal thông báo Đăng nhập thành công */}
+      {showLoginSuccessModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-8 text-center space-y-6 shadow-2xl animate-in zoom-in-95 duration-150">
+            <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto">
+              <div className="w-8 h-8 rounded-full bg-[#10b981] flex items-center justify-center text-white">
+                <Check className="w-5 h-5 stroke-[3]" />
+              </div>
+            </div>
+            <h3 className="text-xl font-bold text-slate-900">
+              Đăng nhập thành công
+            </h3>
+            <button
+              type="button"
+              onClick={() => setShowLoginSuccessModal(false)}
+              className="w-full py-3 px-4 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-semibold rounded-xl transition-colors text-sm"
+            >
+              Đóng
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
