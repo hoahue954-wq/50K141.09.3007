@@ -51,13 +51,13 @@ const ownerOnlyEndpoints = [
   'POST /products',
   'PUT /products/:barcode',
   'DELETE /products/:barcode',
-  'PATCH /invoices/:id/status',
-  'POST /invoices/:id/settle',
   'DELETE /invoices/:id',
   'PATCH /purchase-orders/:id',
   'PUT /purchase-orders/:id',
   'POST /purchase-orders/:id/complete',
   'DELETE /purchase-orders/:id',
+  'GET /inventory',
+  'GET /inventory/stats',
   'GET /inventory/low-stock',
   'GET /inventory/transactions',
   'POST /disposals/:id/approve',
@@ -82,6 +82,7 @@ const ownerOnlyEndpoints = [
   'GET /reports/profit',
   'GET /reports/daily',
   'GET /reports/monthly',
+  'POST /reports/expenses/import',
 ];
 
 function routerHasAuthenticate(router: Router): boolean {

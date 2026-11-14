@@ -104,6 +104,189 @@ export async function applyReturnStock(
   return stockAfter;
 }
 
+export function returnStockAdjustments(previousItems: ReturnLine[], nextItems: ReturnLine[]): ReturnLine[] {
+  const deltas = new Map<string, { quantity: number; item: ReturnLine }>();
+  const accumulate = (item: ReturnLine, multiplier: number) => {
+    const direction = item.kind === 'RETURNED' ? 1 : -1;
+    const current = deltas.get(item.productId);
+    deltas.set(item.productId, {
+      quantity: (current?.quantity ?? 0) + direction * item.quantity * multiplier,
+      item: current?.item ?? item,
+    });
+  };
+
+  previousItems.forEach((item) => accumulate(item, -1));
+  nextItems.forEach((item) => accumulate(item, 1));
+
+  return [...deltas.values()]
+    .filter(({ quantity }) => quantity !== 0)
+    .map(({ quantity, item }) => ({
+      ...item,
+      kind: quantity > 0 ? 'RETURNED' : 'EXCHANGED',
+      quantity: Math.abs(quantity),
+      lineTotal: item.unitPrice.mul(Math.abs(quantity)),
+    }));
+}
+
+function stockAdapter(tx: Prisma.TransactionClient, slipId: string, userId: string) {
+  return {
+    incrementStock: async (item: ReturnLine) => {
+      const product = await tx.product.update({
+        where: { id: item.productId },
+        data: { stockQuantity: { increment: item.quantity } },
+        select: { stockQuantity: true },
+      });
+      return product.stockQuantity;
+    },
+    decrementIfAvailable: async (item: ReturnLine) => {
+      const updated = await tx.product.updateMany({
+        where: {
+          id: item.productId,
+          stockQuantity: { gte: item.quantity },
+        },
+        data: { stockQuantity: { decrement: item.quantity } },
+      });
+      if (updated.count !== 1) return null;
+      const product = await tx.product.findUniqueOrThrow({
+        where: { id: item.productId },
+        select: { stockQuantity: true },
+      });
+      return product.stockQuantity;
+    },
+    getCurrentStock: async (item: ReturnLine) => (await tx.product.findUnique({
+      where: { id: item.productId },
+      select: { stockQuantity: true },
+    }))?.stockQuantity ?? 0,
+    writeTransaction: async (item: ReturnLine, quantity: number, stockAfter: number) => {
+      await tx.inventoryTransaction.create({
+        data: {
+          productId: item.productId,
+          type: InventoryTransactionType.RETURN,
+          quantity,
+          stockAfter,
+          refType: 'RETURN',
+          refId: slipId,
+          createdById: userId,
+        },
+      });
+    },
+  };
+}
+
+async function lockInvoiceAndCustomer(tx: Prisma.TransactionClient, invoiceId: string): Promise<void> {
+  const invoice = await tx.invoice.findFirst({
+    where: { id: invoiceId, isDeleted: false },
+    select: { customerId: true },
+  });
+  if (!invoice) throw new AppError(404, 'Không tìm thấy hóa đơn gốc.', 'INVOICE_NOT_FOUND');
+  if (invoice.customerId) {
+    await tx.$queryRaw`SELECT "id" FROM "customers" WHERE "id" = ${invoice.customerId}::uuid FOR UPDATE`;
+  }
+  await tx.$queryRaw`SELECT "id" FROM "invoices" WHERE "id" = ${invoiceId}::uuid FOR UPDATE`;
+}
+
+async function applyReturnDebtCredit(
+  tx: Prisma.TransactionClient,
+  slip: ReturnRecord,
+  reconcilePreviouslyCredited = false,
+): Promise<Prisma.Decimal> {
+  const invoice = await tx.invoice.findUnique({
+    where: { id: slip.invoice.id },
+    include: { debtRecord: true },
+  });
+  if (
+    !invoice ||
+    invoice.paymentMethod !== 'DEBT' ||
+    (invoice.status !== 'UNPAID' && !reconcilePreviouslyCredited)
+  ) {
+    return new Prisma.Decimal(0);
+  }
+  if (!invoice.debtRecord) {
+    throw new AppError(409, 'Không tìm thấy bản ghi công nợ của hóa đơn.', 'DEBT_RECORD_NOT_FOUND');
+  }
+
+  const [payments, priorCredits] = await Promise.all([
+    tx.debtPayment.aggregate({
+      where: { invoiceId: invoice.id },
+      _sum: { amount: true },
+    }),
+    tx.returnSlip.aggregate({
+      where: {
+        invoiceId: invoice.id,
+        id: { not: slip.id },
+        status: 'APPROVED',
+        isDeleted: false,
+      },
+      _sum: { debtCredit: true },
+    }),
+  ]);
+  const paid = payments._sum.amount ?? new Prisma.Decimal(0);
+  const credited = priorCredits._sum.debtCredit ?? new Prisma.Decimal(0);
+  const outstanding = Prisma.Decimal.max(
+    new Prisma.Decimal(0),
+    invoice.totalAmount.sub(paid).sub(credited),
+  );
+  const netCredit = Prisma.Decimal.max(new Prisma.Decimal(0), slip.totalRefund.sub(
+    slip.items
+      .filter((item) => item.kind === 'EXCHANGED')
+      .reduce((sum, item) => sum.add(item.lineTotal), new Prisma.Decimal(0)),
+  ));
+  const debtCredit = Prisma.Decimal.min(outstanding, netCredit);
+  const remaining = outstanding.sub(debtCredit);
+  const now = new Date();
+
+  await tx.returnSlip.update({ where: { id: slip.id }, data: { debtCredit } });
+  await tx.invoice.update({
+    where: { id: invoice.id },
+    data: remaining.isZero()
+      ? { status: 'PAID', paidAt: invoice.paidAt ?? now }
+      : { status: 'UNPAID', paidAt: null, paymentMethodSettled: null },
+  });
+  await tx.debtRecord.update({
+    where: { id: invoice.debtRecord.id },
+    data: { settledAt: remaining.isZero() ? now : null },
+  });
+  return debtCredit;
+}
+
+async function approveWithinTransaction(
+  tx: Prisma.TransactionClient,
+  id: string,
+  userId: string,
+  automaticallyRecorded = false,
+): Promise<ReturnRecord> {
+  const claimed = await claimPendingRecord(async () => (await tx.returnSlip.updateMany({
+    where: { id, status: 'PENDING', isDeleted: false },
+    data: {
+      status: 'APPROVED',
+      approvedById: automaticallyRecorded ? null : userId,
+      approvedAt: new Date(),
+    },
+  })).count);
+  if (!claimed) {
+    const current = await tx.returnSlip.findUnique({
+      where: { id },
+      select: { status: true, isDeleted: true },
+    });
+    if (!current || current.isDeleted) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
+    throw new AppError(409, 'Phiếu đổi/trả không ở trạng thái chờ duyệt.', 'RETURN_NOT_PENDING');
+  }
+
+  const slip = await tx.returnSlip.findUniqueOrThrow({ where: { id }, include: returnInclude });
+  await applyReturnStock(slip.items, stockAdapter(tx, slip.id, userId));
+  const debtCredit = await applyReturnDebtCredit(tx, slip);
+  await tx.auditLog.create({
+    data: {
+      userId,
+      action: automaticallyRecorded ? 'Ghi nhận phiếu đổi/trả' : 'Duyệt phiếu đổi/trả',
+      target: 'Phiếu đổi trả',
+      targetId: slip.id,
+      details: `Mã ${slip.code}; hoàn ${slip.totalRefund.toString()}; chênh lệch ${slip.difference.toString()}; cấn nợ ${debtCredit.toString()}`,
+    },
+  });
+  return tx.returnSlip.findUniqueOrThrow({ where: { id }, include: returnInclude });
+}
+
 function assertWithin24Hours(createdAt: Date): void {
   const elapsed = Date.now() - createdAt.getTime();
   if (elapsed < 0 || elapsed > 24 * 60 * 60 * 1000) {
@@ -150,7 +333,7 @@ export const returnRepository = {
     write: ReturnSlipWrite;
   }): Promise<ReturnRecord> {
     return prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "invoices" WHERE "id" = ${input.invoiceId}::uuid FOR UPDATE`;
+      await lockInvoiceAndCustomer(tx, input.invoiceId);
       const invoice = await tx.invoice.findFirst({
         where: { id: input.invoiceId, isDeleted: false },
         include: { details: true },
@@ -218,7 +401,7 @@ export const returnRepository = {
           details: `Mã ${slip.code}; hóa đơn ${invoice.code}; hoàn ${slip.totalRefund.toString()}; chênh lệch ${slip.difference.toString()}`,
         },
       });
-      return slip;
+      return approveWithinTransaction(tx, slip.id, input.createdById, true);
     }, { maxWait: 20000, timeout: 120000 });
   },
 
@@ -269,30 +452,19 @@ export const returnRepository = {
 
   async update(id: string, userId: string, write: ReturnSlipWrite): Promise<ReturnRecord> {
     return prisma.$transaction(async (tx) => {
-      const current = await tx.returnSlip.findFirst({
+      const initial = await tx.returnSlip.findFirst({
         where: { id, isDeleted: false },
         select: { invoiceId: true },
       });
-      if (!current) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
-      await tx.$queryRaw`SELECT "id" FROM "invoices" WHERE "id" = ${current.invoiceId}::uuid FOR UPDATE`;
-
-      const claimed = await tx.returnSlip.updateMany({
-        where: { id, status: 'PENDING', isDeleted: false },
-        data: {
-          type: write.type,
-          reason: write.reason,
-          evidenceUrl: write.evidenceUrl,
-          totalRefund: write.totalRefund,
-          difference: write.difference,
-        },
+      if (!initial) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
+      await lockInvoiceAndCustomer(tx, initial.invoiceId);
+      const current = await tx.returnSlip.findFirst({
+        where: { id, isDeleted: false },
+        include: returnInclude,
       });
-      if (claimed.count !== 1) {
-        const slip = await tx.returnSlip.findUnique({
-          where: { id },
-          select: { isDeleted: true, status: true },
-        });
-        if (!slip || slip.isDeleted) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
-        throw new AppError(409, 'Chỉ được sửa phiếu đổi/trả đang chờ duyệt.', 'RETURN_NOT_PENDING');
+      if (!current) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
+      if (current.status !== 'PENDING' && current.status !== 'APPROVED') {
+        throw new AppError(409, 'Chỉ được sửa phiếu đổi/trả đã ghi nhận.', 'RETURN_NOT_PENDING');
       }
 
       const invoice = await tx.invoice.findFirst({
@@ -300,6 +472,7 @@ export const returnRepository = {
         include: { details: true },
       });
       if (!invoice) throw new AppError(404, 'Không tìm thấy hóa đơn gốc.', 'INVOICE_NOT_FOUND');
+      assertWithin24Hours(invoice.createdAt);
       const previous = await tx.returnSlip.findMany({
         where: {
           invoiceId: invoice.id,
@@ -324,6 +497,19 @@ export const returnRepository = {
         returned,
       );
 
+      const claimed = await tx.returnSlip.updateMany({
+        where: { id, status: current.status, isDeleted: false },
+        data: {
+          type: write.type,
+          reason: write.reason,
+          evidenceUrl: write.evidenceUrl,
+          totalRefund: write.totalRefund,
+          difference: write.difference,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new AppError(409, 'Phiếu đổi/trả đã được cập nhật bởi thao tác khác.', 'RETURN_STATUS_CONFLICT');
+      }
       await tx.returnItem.deleteMany({ where: { returnSlipId: id } });
       await tx.returnItem.createMany({
         data: write.items.map((item) => ({
@@ -340,6 +526,14 @@ export const returnRepository = {
           lineTotal: item.lineTotal,
         })),
       });
+      const updatedSlip = await tx.returnSlip.findUniqueOrThrow({ where: { id }, include: returnInclude });
+      if (current.status === 'APPROVED') {
+        await applyReturnStock(
+          returnStockAdjustments(current.items, write.items),
+          stockAdapter(tx, id, userId),
+        );
+        await applyReturnDebtCredit(tx, updatedSlip, !current.debtCredit.isZero());
+      }
       const slip = await tx.returnSlip.findUniqueOrThrow({ where: { id }, include: returnInclude });
       await tx.auditLog.create({
         data: {
@@ -361,137 +555,8 @@ export const returnRepository = {
         select: { invoiceId: true },
       });
       if (!current) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
-      const invoiceLock = await tx.invoice.findUnique({
-        where: { id: current.invoiceId },
-        select: { customerId: true },
-      });
-      if (invoiceLock?.customerId) {
-        await tx.$queryRaw`SELECT "id" FROM "customers" WHERE "id" = ${invoiceLock.customerId}::uuid FOR UPDATE`;
-      }
-      await tx.$queryRaw`SELECT "id" FROM "invoices" WHERE "id" = ${current.invoiceId}::uuid FOR UPDATE`;
-
-      const claimed = await claimPendingRecord(async () => (await tx.returnSlip.updateMany({
-        where: { id, status: 'PENDING', isDeleted: false },
-        data: { status: 'APPROVED', approvedById: userId, approvedAt: new Date() },
-      })).count);
-      if (!claimed) {
-        const current = await tx.returnSlip.findUnique({
-          where: { id },
-          select: { status: true, isDeleted: true },
-        });
-        if (!current || current.isDeleted) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
-        throw new AppError(409, 'Phiếu đổi/trả không ở trạng thái chờ duyệt.', 'RETURN_NOT_PENDING');
-      }
-
-      const slip = await tx.returnSlip.findUniqueOrThrow({
-        where: { id },
-        include: returnInclude,
-      });
-
-      await applyReturnStock(slip.items, {
-        incrementStock: async (item) => {
-          const product = await tx.product.update({
-            where: { id: item.productId },
-            data: { stockQuantity: { increment: item.quantity } },
-            select: { stockQuantity: true },
-          });
-          return product.stockQuantity;
-        },
-        decrementIfAvailable: async (item) => {
-          const updated = await tx.product.updateMany({
-            where: {
-              id: item.productId,
-              stockQuantity: { gte: item.quantity },
-            },
-            data: { stockQuantity: { decrement: item.quantity } },
-          });
-          if (updated.count !== 1) return null;
-          const product = await tx.product.findUniqueOrThrow({
-            where: { id: item.productId },
-            select: { stockQuantity: true },
-          });
-          return product.stockQuantity;
-        },
-        getCurrentStock: async (item) => (await tx.product.findUnique({
-          where: { id: item.productId },
-          select: { stockQuantity: true },
-        }))?.stockQuantity ?? 0,
-        writeTransaction: async (item, quantity, quantityAfter) => {
-          await tx.inventoryTransaction.create({
-            data: {
-              productId: item.productId,
-              type: InventoryTransactionType.RETURN,
-              quantity,
-              stockAfter: quantityAfter,
-              refType: 'RETURN',
-              refId: slip.id,
-              createdById: userId,
-            },
-          });
-        },
-      });
-
-      let debtCredit = new Prisma.Decimal(0);
-      const invoice = await tx.invoice.findUnique({
-        where: { id: slip.invoice.id },
-        include: { debtRecord: true },
-      });
-      if (invoice?.status === 'UNPAID' && invoice.paymentMethod === 'DEBT') {
-        if (!invoice.debtRecord) {
-          throw new AppError(409, 'Không tìm thấy bản ghi công nợ của hóa đơn.', 'DEBT_RECORD_NOT_FOUND');
-        }
-        const [payments, priorCredits] = await Promise.all([
-          tx.debtPayment.aggregate({
-            where: { invoiceId: invoice.id },
-            _sum: { amount: true },
-          }),
-          tx.returnSlip.aggregate({
-            where: {
-              invoiceId: invoice.id,
-              id: { not: slip.id },
-              status: 'APPROVED',
-              isDeleted: false,
-            },
-            _sum: { debtCredit: true },
-          }),
-        ]);
-        const paid = payments._sum.amount ?? new Prisma.Decimal(0);
-        const credited = priorCredits._sum.debtCredit ?? new Prisma.Decimal(0);
-        const outstanding = Prisma.Decimal.max(
-          new Prisma.Decimal(0),
-          invoice.totalAmount.sub(paid).sub(credited),
-        );
-        const netCredit = Prisma.Decimal.max(new Prisma.Decimal(0), slip.totalRefund.sub(
-          slip.items
-            .filter((item) => item.kind === 'EXCHANGED')
-            .reduce((sum, item) => sum.add(item.lineTotal), new Prisma.Decimal(0)),
-        ));
-        debtCredit = Prisma.Decimal.min(outstanding, netCredit);
-        const remaining = outstanding.sub(debtCredit);
-        await tx.returnSlip.update({ where: { id: slip.id }, data: { debtCredit } });
-        if (remaining.isZero()) {
-          const now = new Date();
-          await tx.invoice.update({
-            where: { id: invoice.id },
-            data: { status: 'PAID', paidAt: now },
-          });
-          await tx.debtRecord.update({
-            where: { id: invoice.debtRecord.id },
-            data: { settledAt: now },
-          });
-        }
-      }
-
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: 'Duyệt phiếu đổi/trả',
-          target: 'Phiếu đổi trả',
-          targetId: slip.id,
-          details: `Mã ${slip.code}; hoàn ${slip.totalRefund.toString()}; chênh lệch ${slip.difference.toString()}; cấn nợ ${debtCredit.toString()}`,
-        },
-      });
-      return tx.returnSlip.findUniqueOrThrow({ where: { id }, include: returnInclude });
+      await lockInvoiceAndCustomer(tx, current.invoiceId);
+      return approveWithinTransaction(tx, id, userId);
     }, { maxWait: 20000, timeout: 120000 });
   },
 

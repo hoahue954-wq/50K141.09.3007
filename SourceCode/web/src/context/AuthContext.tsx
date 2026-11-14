@@ -21,10 +21,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Khởi tạo người dùng ban đầu
-    const currentUser = api.auth.getCurrentUser();
-    setUser(currentUser);
-    setIsLoading(false);
+    let isMounted = true;
+
+    async function initAuth() {
+      try {
+        const restoredUser = await api.auth.restoreSession();
+        if (isMounted) {
+          setUser(restoredUser);
+        }
+      } catch (err) {
+        console.error('Lỗi khi khôi phục phiên đăng nhập:', err);
+        if (isMounted) {
+          setUser(null);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    initAuth();
+
+    const unsubscribe = api.auth.onAuthStateChange((updatedUser) => {
+      if (isMounted) {
+        setUser(updatedUser);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
   const login = async (username: string, password: string) => {

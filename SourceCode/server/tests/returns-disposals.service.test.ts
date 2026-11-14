@@ -11,10 +11,13 @@ import {
 import {
   applyReturnStock,
   assertReturnQuantitiesAvailable,
+  returnStockAdjustments,
+  returnRepository,
   type ReturnLine,
 } from '../src/repositories/return.repository.js';
 import { returnRules } from '../src/services/return.service.js';
 import { disposalService } from '../src/services/disposal.service.js';
+import { returnService } from '../src/services/return.service.js';
 import { evidenceStorage } from '../src/config/evidence-storage.js';
 import type { AuthenticatedProfile } from '../src/types/auth.js';
 import { claimPendingRecord } from '../src/utils/approval.js';
@@ -62,8 +65,14 @@ const originalMethods = {
   findProducts: disposalRepository.findProducts,
   create: disposalRepository.create,
   createCode: disposalRepository.createCode,
+  findMany: disposalRepository.findMany,
+  findById: disposalRepository.findById,
   upload: evidenceStorage.upload,
   createSignedUrl: evidenceStorage.createSignedUrl,
+};
+const originalReturnMethods = {
+  findMany: returnRepository.findMany,
+  findById: returnRepository.findById,
 };
 
 afterEach(() => {
@@ -71,7 +80,10 @@ afterEach(() => {
     findProducts: originalMethods.findProducts,
     create: originalMethods.create,
     createCode: originalMethods.createCode,
+    findMany: originalMethods.findMany,
+    findById: originalMethods.findById,
   });
+  Object.assign(returnRepository, originalReturnMethods);
   Object.assign(evidenceStorage, {
     upload: originalMethods.upload,
     createSignedUrl: originalMethods.createSignedUrl,
@@ -295,6 +307,49 @@ test('return/exchange approval logs positive returned stock and negative exchang
     },
   });
 
+  test('editing an approved return applies only the stock delta', () => {
+    const returned: ReturnLine = {
+      productId: water.productId,
+      invoiceDetailId: 'c6d862b1-882e-48dd-a929-2ac5d33e0e01',
+      kind: 'RETURNED',
+      productBarcode: water.productBarcode,
+      productName: water.productName,
+      unit: water.unit,
+      quantity: 2,
+      unitPrice: new Prisma.Decimal(6.5),
+      costPrice: new Prisma.Decimal(4),
+      lineTotal: new Prisma.Decimal(13),
+    };
+    const oldExchange: ReturnLine = {
+      ...returned,
+      productId: '5a5ef519-11e1-4f4e-9f13-8865ff0ea1d8',
+      invoiceDetailId: null,
+      kind: 'EXCHANGED',
+      productBarcode: '8930000000002',
+      productName: 'Nước ngọt cũ',
+      quantity: 1,
+    };
+    const newExchange: ReturnLine = {
+      ...oldExchange,
+      productId: '29cb76a0-4798-4a0f-93d6-b81edfa24cb5',
+      productBarcode: '8930000000003',
+      productName: 'Nước ngọt mới',
+      quantity: 2,
+    };
+
+    assert.deepEqual(
+      returnStockAdjustments([returned, oldExchange], [
+        { ...returned, quantity: 3, lineTotal: new Prisma.Decimal(19.5) },
+        newExchange,
+      ]).map(({ productId, kind, quantity }) => ({ productId, kind, quantity })),
+      [
+        { productId: water.productId, kind: 'RETURNED', quantity: 1 },
+        { productId: oldExchange.productId, kind: 'RETURNED', quantity: 1 },
+        { productId: newExchange.productId, kind: 'EXCHANGED', quantity: 2 },
+      ],
+    );
+  });
+
   assert.equal(stock.get(water.productId), 4);
   assert.equal(stock.get(exchange.productId), 1);
   assert.deepEqual(transactions, [
@@ -368,4 +423,38 @@ test('STAFF cannot approve a disposal or return slip', () => {
   assert.ok(receivedError instanceof AppError);
   assert.equal(receivedError.statusCode, 403);
   assert.equal(receivedError.code, 'FORBIDDEN');
+});
+
+test('STAFF can list and request details for slips created by other users', async () => {
+  let disposalCreatorId: string | undefined = 'unexpected';
+  let disposalDetailCreatorId: string | undefined = 'unexpected';
+  let returnCreatorId: string | undefined = 'unexpected';
+  let returnDetailCreatorId: string | undefined = 'unexpected';
+
+  disposalRepository.findMany = async (options) => {
+    disposalCreatorId = options.creatorId;
+    return [];
+  };
+  disposalRepository.findById = async (_id, creatorId) => {
+    disposalDetailCreatorId = creatorId;
+    return null;
+  };
+  returnRepository.findMany = async (options) => {
+    returnCreatorId = options.creatorId;
+    return [];
+  };
+  returnRepository.findById = async (_id, creatorId) => {
+    returnDetailCreatorId = creatorId;
+    return null;
+  };
+
+  await disposalService.list({}, staff);
+  await returnService.list({}, staff);
+  await assert.rejects(() => disposalService.getById('another-users-slip', staff));
+  await assert.rejects(() => returnService.getById('another-users-slip', staff));
+
+  assert.equal(disposalCreatorId, undefined);
+  assert.equal(disposalDetailCreatorId, undefined);
+  assert.equal(returnCreatorId, undefined);
+  assert.equal(returnDetailCreatorId, undefined);
 });

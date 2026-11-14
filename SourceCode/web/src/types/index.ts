@@ -21,11 +21,12 @@ export interface Product {
   name: string;
   category_id: string;
   category_name?: string;
-  cost_price?: number; // Chỉ Chủ mới được xem/trả về
+  cost_price?: number; // Giá nhập được hiển thị cho Chủ và Nhân viên.
   selling_price: number;
   unit: string;
   stock_quantity: number;
   min_stock: number; // Tồn tối thiểu để cảnh báo
+  image_url?: string;
 }
 
 export interface Customer {
@@ -134,6 +135,7 @@ export interface ReturnSlip {
   creator_name: string;
   status: 'pending' | 'approved' | 'rejected'; // Chờ duyệt | Đã duyệt | Từ chối
   type: 'return' | 'exchange'; // Chỉ trả | Đổi hàng
+  reason?: string;
   items: ReturnSlipItem[];
   exchange_items?: ReturnSlipItem[];
   total_refund: number;

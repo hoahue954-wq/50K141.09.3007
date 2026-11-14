@@ -293,7 +293,6 @@ export const returnService = {
     const limit = query.limit ?? 50;
     const dateRange = getDateRange(query);
     const slips = await returnRepository.findMany({
-      ...(profile.role.code === 'STAFF' ? { creatorId: profile.id } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.search ? { search: query.search } : {}),
@@ -305,10 +304,7 @@ export const returnService = {
   },
 
   async getById(id: string, profile: AuthenticatedProfile): Promise<ReturnDto> {
-    const slip = await returnRepository.findById(
-      id,
-      profile.role.code === 'STAFF' ? profile.id : undefined,
-    );
+    const slip = await returnRepository.findById(id);
     if (!slip) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
     return toDto(slip);
   },
@@ -354,13 +350,20 @@ export const returnService = {
   async update(id: string, input: UpdateReturnInput, profile: AuthenticatedProfile): Promise<ReturnDto> {
     const existing = await returnRepository.findById(id);
     if (!existing) throw new AppError(404, 'Không tìm thấy phiếu đổi/trả.', 'RETURN_NOT_FOUND');
-    if (existing.status !== 'PENDING') {
-      throw new AppError(409, 'Chỉ được sửa phiếu đổi/trả đang chờ duyệt.', 'RETURN_NOT_PENDING');
+    if (existing.status !== 'PENDING' && existing.status !== 'APPROVED') {
+      throw new AppError(409, 'Chỉ được sửa phiếu đổi/trả đã ghi nhận.', 'RETURN_NOT_PENDING');
     }
     const snapshot = await returnRepository.findInvoice({ id: existing.invoice.id });
     if (!snapshot) throw new AppError(404, 'Không tìm thấy hóa đơn gốc.', 'INVOICE_NOT_FOUND');
+    assertWithin24Hours(snapshot.createdAt);
     const type = input.type ?? existing.type;
-    const evidenceUrl = await evidenceStorage.upload(input.proof_image_url, 'returns', profile.id);
+    const proofImageUrl = input.proof_image_url ?? input.evidence_url;
+    const evidenceUrl = proofImageUrl
+      ? await evidenceStorage.upload(proofImageUrl, 'returns', profile.id)
+      : existing.evidenceUrl;
+    if (!evidenceUrl) {
+      throw new AppError(400, 'Minh chứng phiếu đổi/trả bị thiếu.', 'EVIDENCE_MISSING');
+    }
     const write = await buildWrite(
       snapshot,
       type,

@@ -352,10 +352,10 @@ const CreateForm: React.FC<{
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [formError, setFormError] = useState('');
-  const { showSuccess, showError } = useToast();
+  const { showSuccess, showError, showToast } = useToast();
   const queryClient = useQueryClient();
 
-  const autoCode = `PHN${String(Date.now()).slice(-6)}`;
+  const [autoCode] = useState(() => `PHN${String(Date.now()).slice(-6)}`);
 
   const filteredProducts = products.filter(
     (p) =>
@@ -403,6 +403,7 @@ const CreateForm: React.FC<{
       const invalid = items.find((i) => i.quantity <= 0 || i.cost_price <= 0);
       if (invalid) throw new Error(`Số lượng và giá nhập phải lớn hơn 0 (${invalid.product_name}).`);
       return api.purchaseOrders.create({
+        code: autoCode,
         order_date: orderDate,
         items: items.map((i) => ({
           product_barcode: i.product_barcode,
@@ -418,8 +419,25 @@ const CreateForm: React.FC<{
       onSuccess(po);
     },
     onError: (err: any) => {
-      setFormError(err.message);
-      showError(err.message);
+      const isTimeoutOrNetwork =
+        err?.name === 'AbortError' ||
+        err?.message?.toLowerCase().includes('abort') ||
+        err?.message?.toLowerCase().includes('timeout') ||
+        err?.message?.toLowerCase().includes('failed to fetch') ||
+        err?.message?.toLowerCase().includes('networkerror') ||
+        (typeof navigator !== 'undefined' && !navigator.onLine);
+
+      if (isTimeoutOrNetwork) {
+        showToast(
+          'Hệ thống đang xử lý phiếu nhập, có thể mất vài giây. Vui lòng không bấm lưu lại, hãy kiểm tra danh sách phiếu nhập sau ít phút.',
+          'info'
+        );
+        queryClient.invalidateQueries({ queryKey: ['purchase-orders'] });
+        onCancel();
+      } else {
+        setFormError(err.message);
+        showError(err.message);
+      }
     },
   });
 
@@ -615,9 +633,13 @@ const CreateForm: React.FC<{
             </button>
             <button
               type="button"
-              onClick={() => createMutation.mutate()}
+              onClick={() => {
+                if (!createMutation.isPending) {
+                  createMutation.mutate();
+                }
+              }}
               disabled={createMutation.isPending}
-              className="flex items-center justify-center gap-2 px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
+              className="flex items-center justify-center gap-2 px-6 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
             >
               <Edit2 className="w-4 h-4" />
               {createMutation.isPending ? 'Đang lưu...' : 'Lập phiếu'}

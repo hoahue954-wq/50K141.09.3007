@@ -136,18 +136,34 @@ async function resolveLines(items: PurchaseOrderItemInput[]) {
 
 export const purchaseOrderService = {
   async create(input: CreatePurchaseOrderInput, profile: AuthenticatedProfile): Promise<PurchaseOrderDto> {
+    if (input.code) {
+      const existing = await purchaseOrderRepository.findByCode(input.code);
+      if (existing) {
+        return purchaseOrderDto(existing, true);
+      }
+    }
     const lines = await resolveLines(input.items);
     const totalAmount = lines.reduce((sum, line) => sum.add(line.lineTotal), new Prisma.Decimal(0));
-    const saved = await purchaseOrderRepository.create({
-      code: await purchaseOrderRepository.createCode(),
-      orderDate: orderDate(input.order_date),
-      createdById: profile.id,
-      supplierName: input.supplier_name || null,
-      note: input.notes ?? input.note ?? null,
-      totalAmount,
-      items: lines,
-    });
-    return purchaseOrderDto(saved, profile.role.code === 'OWNER');
+    try {
+      const saved = await purchaseOrderRepository.create({
+        code: input.code || (await purchaseOrderRepository.createCode()),
+        orderDate: orderDate(input.order_date),
+        createdById: profile.id,
+        supplierName: input.supplier_name || null,
+        note: input.notes ?? input.note ?? null,
+        totalAmount,
+        items: lines,
+      });
+      return purchaseOrderDto(saved, true);
+    } catch (err: any) {
+      if (input.code && (err?.code === 'P2002' || err?.message?.includes('Unique constraint'))) {
+        const existing = await purchaseOrderRepository.findByCode(input.code);
+        if (existing) {
+          return purchaseOrderDto(existing, profile.role.code === 'OWNER');
+        }
+      }
+      throw err;
+    }
   },
 
   async list(query: PurchaseOrderListQuery, profile: AuthenticatedProfile): Promise<PurchaseOrderDto[]> {
@@ -156,22 +172,18 @@ export const purchaseOrderService = {
     const limit = query.limit ?? 50;
     const dateRange = listDateRange(query);
     const orders = await purchaseOrderRepository.findMany({
-      ...(profile.role.code === 'STAFF' ? { creatorId: profile.id } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.search ? { search: query.search } : {}),
       ...(dateRange ? { dateRange } : {}),
       ...(hasPagination ? { skip: (page - 1) * limit, take: limit } : {}),
     });
-    return orders.map((order) => purchaseOrderDto(order, profile.role.code === 'OWNER'));
+    return orders.map((order) => purchaseOrderDto(order, true));
   },
 
   async getById(id: string, profile: AuthenticatedProfile): Promise<PurchaseOrderDto> {
-    const order = await purchaseOrderRepository.findById(
-      id,
-      profile.role.code === 'STAFF' ? profile.id : undefined,
-    );
+    const order = await purchaseOrderRepository.findById(id);
     if (!order) throw new AppError(404, 'Không tìm thấy phiếu nhập.', 'PURCHASE_ORDER_NOT_FOUND');
-    return purchaseOrderDto(order, profile.role.code === 'OWNER');
+    return purchaseOrderDto(order, true);
   },
 
   async update(id: string, input: UpdatePurchaseOrderInput, profile: AuthenticatedProfile): Promise<PurchaseOrderDto> {

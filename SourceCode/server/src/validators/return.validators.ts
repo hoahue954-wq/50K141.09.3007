@@ -89,8 +89,14 @@ export const updateReturnSchema = z
         message: 'Phiếu đổi hàng cần có ít nhất một sản phẩm đổi.',
       });
     }
-  })
-  .transform(normalizeEvidence);
+    if (value.type === 'RETURN' && value.exchange_items?.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['exchange_items'],
+        message: 'Phiếu chỉ trả hàng không được có sản phẩm đổi.',
+      });
+    }
+  });
 
 const dateSchema = z.string().trim().min(1).refine((value) => {
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);

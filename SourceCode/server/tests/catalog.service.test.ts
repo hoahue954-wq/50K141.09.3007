@@ -7,6 +7,7 @@ import { catalogService } from '../src/services/catalog.service.js';
 import { AppError } from '../src/utils/AppError.js';
 import {
   categoryCreateSchema,
+  categoryUpdateSchema,
   productCreateSchema,
   productUpdateSchema,
 } from '../src/validators/catalog.validators.js';
@@ -49,6 +50,7 @@ const originalProductMethods = {
   findByName: productRepository.findByName,
   hasInvoiceDetails: productRepository.hasInvoiceDetails,
   discontinue: productRepository.discontinue,
+  findAll: productRepository.findAll,
 };
 
 afterEach(() => {
@@ -66,7 +68,7 @@ function assertAppError(action: () => Promise<unknown>, statusCode: number, code
 }
 
 test('rejects blank category and product names', () => {
-  const category = categoryCreateSchema.safeParse({ code: 'DM001', name: '  ' });
+  const category = categoryCreateSchema.safeParse({ name: '  ' });
   const product = productCreateSchema.safeParse({
     barcode: '8930000000001',
     name: ' ',
@@ -79,9 +81,10 @@ test('rejects blank category and product names', () => {
   assert.equal(product.success, false);
 });
 
-test('validates category codes and 13-digit product barcodes', () => {
-  assert.equal(categoryCreateSchema.safeParse({ code: 'DM001', name: 'Đồ uống' }).success, true);
-  assert.equal(categoryCreateSchema.safeParse({ code: 'DRINK', name: 'Đồ uống' }).success, false);
+test('category codes are generated server-side and product barcodes require 13 digits', () => {
+  assert.equal(categoryCreateSchema.safeParse({ name: 'Đồ uống' }).success, true);
+  assert.equal(categoryCreateSchema.safeParse({ code: 'DM001', name: 'Đồ uống' }).success, false);
+  assert.equal(categoryUpdateSchema.safeParse({ code: 'DM002' }).success, false);
   assert.equal(productCreateSchema.safeParse({
     barcode: '8936136163307',
     name: 'Nước suối',
@@ -100,16 +103,26 @@ test('validates category codes and 13-digit product barcodes', () => {
   }).success, false);
 });
 
+test('product catalog responses can include import price for STAFF', async () => {
+  productRepository.findAll = async () => [
+    productFixture as unknown as Product & { category: { name: string } },
+  ];
+
+  const products = await catalogService.listProducts({ includeCostPrice: true });
+
+  assert.equal(products[0]?.cost_price, 3000);
+});
+
 test('rejects duplicate category names', async () => {
   categoryRepository.findByName = async () => categoryFixture;
   await assertAppError(
-    () => catalogService.createCategory({ code: 'DM002', name: 'Đồ uống' }),
+    () => catalogService.createCategory({ name: 'Đồ uống' }),
     409,
     'CATEGORY_NAME_EXISTS',
   );
 });
 
-test('generates a unique category code when none is provided', async () => {
+test('generates a unique category code without accepting a client code', async () => {
   categoryRepository.findByName = async () => null;
   let codeLookups = 0;
   categoryRepository.findByCode = async () => {
@@ -129,17 +142,6 @@ test('generates a unique category code when none is provided', async () => {
 
   assert.match(created.code, /^DM\d{3}$/);
   assert.equal(codeLookups, 2);
-});
-
-test('rejects duplicate caller-provided category codes', async () => {
-  categoryRepository.findByName = async () => null;
-  categoryRepository.findByCode = async () => categoryFixture;
-
-  await assertAppError(
-    () => catalogService.createCategory({ code: 'DM001', name: 'Danh mục khác' }),
-    409,
-    'CATEGORY_CODE_EXISTS',
-  );
 });
 
 test('rejects duplicate category names on update', async () => {

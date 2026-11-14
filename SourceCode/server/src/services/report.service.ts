@@ -3,6 +3,7 @@ import { invoiceService } from './invoice.service.js';
 import { reportRepository } from '../repositories/report.repository.js';
 import { getHcmDateRange, getHcmDateString } from '../utils/date.js';
 import type { ReportRangeQuery } from '../validators/report.validators.js';
+import { parseAndValidateExpensesExcel } from '../validators/expense.validators.js';
 
 type PaymentBreakdown = { cash: Prisma.Decimal; transfer: Prisma.Decimal; debt: Prisma.Decimal };
 type PeriodMetrics = {
@@ -96,7 +97,8 @@ async function collect(query: ReportRangeQuery) {
   }
 
   for (const invoice of sales) {
-    const bucket = ensure(getHcmDateString(invoice.createdAt));
+    const effectiveDate = invoice.paidAt ?? invoice.createdAt;
+    const bucket = ensure(getHcmDateString(effectiveDate));
     bucket.invoiceCount += 1;
     bucket.revenue = bucket.revenue.add(invoice.totalAmount);
     addPaymentAmount(bucket, invoice.paymentMethod, invoice.totalAmount);
@@ -108,8 +110,8 @@ async function collect(query: ReportRangeQuery) {
   for (const slip of returns) {
     if (!slip.approvedAt) continue;
     const bucket = ensure(getHcmDateString(slip.approvedAt));
-    bucket.revenue = bucket.revenue.add(slip.difference);
-    addPaymentAmount(bucket, slip.invoice.paymentMethod, slip.difference);
+    // USER SPEC: KHÔNG cộng trừ chênh lệch phiếu đổi/trả vào doanh thu.
+    // Các phần khác của công thức lợi nhuận (giá vốn hàng đổi/trả) giữ nguyên:
     for (const item of slip.items) {
       const cost = item.costPrice.mul(item.quantity);
       if (item.kind === 'RETURNED') bucket.returnedCost = bucket.returnedCost.add(cost);
@@ -183,7 +185,36 @@ function toRangeQuery(from: string, to: string, groupBy: ReportRangeQuery['group
   return { from, to, group_by: groupBy };
 }
 
+export async function calculateRevenueByDateRange(fromStr: string, toStr: string) {
+  const start = getHcmDateRange(fromStr).start;
+  const end = getHcmDateRange(toStr).end;
+  const sales = await reportRepository.findSales(start, end);
+
+  let totalRevenue = zero();
+  let invoiceCount = 0;
+  const payments: PaymentBreakdown = { cash: zero(), transfer: zero(), debt: zero() };
+
+  for (const invoice of sales) {
+    totalRevenue = totalRevenue.add(invoice.totalAmount);
+    invoiceCount += 1;
+    if (invoice.paymentMethod === 'CASH') payments.cash = payments.cash.add(invoice.totalAmount);
+    else if (invoice.paymentMethod === 'TRANSFER') payments.transfer = payments.transfer.add(invoice.totalAmount);
+    else payments.debt = payments.debt.add(invoice.totalAmount);
+  }
+
+  return {
+    start,
+    end,
+    totalRevenue,
+    invoiceCount,
+    payments,
+    sales,
+  };
+}
+
 export const reportService = {
+  calculateRevenue: calculateRevenueByDateRange,
+
   async revenue(query: ReportRangeQuery) {
     const metrics = await collect(query);
     const total = totalMetrics(metrics);
@@ -294,6 +325,35 @@ export const reportService = {
       totalExpenses: report.summary.expenses,
       netProfit: report.summary.net_profit,
       soldProducts: [...products.values()].sort((left, right) => right.quantity - left.quantity),
+    };
+  },
+
+  async importExpensesExcel(
+    buffer: Buffer,
+    originalname: string,
+    monthStr: string | undefined,
+    userId: string
+  ) {
+    const { items, targetYear, targetMonth } = parseAndValidateExpensesExcel(buffer, originalname, monthStr);
+
+    let replaceRange: { from: Date; to: Date } | undefined;
+    if (targetYear && targetMonth) {
+      const from = new Date(Date.UTC(targetYear, targetMonth - 1, 1));
+      const lastDay = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+      const to = new Date(Date.UTC(targetYear, targetMonth - 1, lastDay, 23, 59, 59, 999));
+      replaceRange = { from, to };
+    }
+
+    await reportRepository.saveExpenses(items, userId, replaceRange);
+
+    const totalAmount = items.reduce((sum, item) => sum.add(item.amount), zero()).toNumber();
+
+    return {
+      success: true,
+      message: 'Nhập dữ liệu chi phí từ Excel thành công!',
+      imported_count: items.length,
+      total_amount: totalAmount,
+      month: targetYear && targetMonth ? `${targetMonth}/${targetYear}` : undefined,
     };
   },
 };

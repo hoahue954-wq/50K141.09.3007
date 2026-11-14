@@ -332,16 +332,23 @@ export const invoiceRepository = {
   },
 
   async staffDayMetrics(userId: string, start: Date, end: Date) {
+    const where = {
+      createdById: userId,
+      isDeleted: false,
+      status: 'PAID' as const,
+      OR: [
+        { paidAt: { gte: start, lt: end } },
+        { paidAt: null, createdAt: { gte: start, lt: end } },
+      ],
+    };
     const [aggregate, count] = await Promise.all([
       prisma.invoice.aggregate({
-        where: { createdById: userId, isDeleted: false, createdAt: { gte: start, lt: end } },
+        where,
         _sum: { totalAmount: true },
         _min: { createdAt: true },
         _max: { createdAt: true },
       }),
-      prisma.invoice.count({
-        where: { createdById: userId, isDeleted: false, createdAt: { gte: start, lt: end } },
-      }),
+      prisma.invoice.count({ where }),
     ]);
     return { aggregate, count };
   },

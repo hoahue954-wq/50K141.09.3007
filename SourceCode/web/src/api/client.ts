@@ -88,27 +88,119 @@ export function resetMockDataToDefault() {
   ensureMockState();
 }
 
+// --- Quản lý Refresh Token dùng chung cho các request song song (Single-flight) ---
+let refreshPromise: Promise<string | null> | null = null;
+
+async function doSharedTokenRefresh(): Promise<string | null> {
+  if (IS_MOCK) return null;
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error || !data.session?.access_token) {
+          return null;
+        }
+        return data.session.access_token;
+      } catch {
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
+
+// Xử lý khi phiên đăng nhập hết hạn hoàn toàn
+function handleAuthExpired(): void {
+  if (IS_MOCK) return;
+  supabase.auth.signOut().catch(() => {});
+  sessionStorage.setItem('th_hang_session_expired', 'Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+  if (!window.location.hash.includes('/login')) {
+    window.location.hash = '#/login';
+  }
+}
+
 // Hàm lấy token Supabase khi gọi API thật
 async function getAuthHeader(): Promise<Record<string, string>> {
   if (IS_MOCK) return {};
   const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  let token = data.session?.access_token;
+
+  // Nếu getSession() không có token thì thử refreshSession() một lần (dùng chung lock)
+  if (!token) {
+    token = (await doSharedTokenRefresh()) || undefined;
+  }
+
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-// Hàm fetch wrapper khi dùng API thật
-async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+// Hàm fetch wrapper khi dùng API thật (tự động thử lại 1 lần nếu 401, hỗ trợ timeout)
+async function apiFetch<T>(
+  endpoint: string,
+  options: RequestInit & { timeout?: number } = {},
+  isRetry = false
+): Promise<T> {
   const headers = await getAuthHeader();
-  const res = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers,
-      ...options.headers,
-    },
-  });
+  const { timeout, ...fetchOptions } = options;
+
+  let timer: any = null;
+  let signal = fetchOptions.signal;
+
+  if (timeout && !signal) {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timer = setTimeout(() => {
+      controller.abort();
+    }, timeout);
+  }
+
+  let res: Response;
+  try {
+    const isFormData = typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData;
+    res = await fetch(`${API_URL}${endpoint}`, {
+      ...fetchOptions,
+      signal,
+      headers: {
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...headers,
+        ...fetchOptions.headers,
+      },
+    });
+  } catch (err: any) {
+    if (timer) clearTimeout(timer);
+    throw err;
+  }
+  if (timer) clearTimeout(timer);
 
   if (!res.ok) {
+    // Nếu API trả 401 và chưa thử lại: refresh token rồi gửi lại đúng 1 lần
+    if (res.status === 401 && !isRetry && !IS_MOCK) {
+      const newToken = await doSharedTokenRefresh();
+      if (newToken) {
+        return apiFetch<T>(
+          endpoint,
+          {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: `Bearer ${newToken}`,
+            },
+          },
+          true
+        );
+      } else {
+        // Refresh thất bại: đăng xuất sạch và chuyển về /login
+        handleAuthExpired();
+        throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+      }
+    }
+
+    if (res.status === 401 && isRetry && !IS_MOCK) {
+      handleAuthExpired();
+      throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+    }
+
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.message || `Lỗi API (${res.status}): ${res.statusText}`);
   }
@@ -201,6 +293,41 @@ export const api = {
         return getStorage<UserProfile | null>('current_user', INITIAL_USERS[0]);
       }
       return null;
+    },
+
+    async restoreSession(): Promise<UserProfile | null> {
+      if (IS_MOCK) {
+        return api.auth.getCurrentUser();
+      }
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error || !data.session) {
+          return null;
+        }
+        // Gọi API backend /auth/me để lấy profile người dùng
+        const profile = await apiFetch<UserProfile>('/auth/me');
+        return profile;
+      } catch (err) {
+        console.error('Không thể khôi phục phiên đăng nhập:', err);
+        return null;
+      }
+    },
+
+    onAuthStateChange(callback: (user: UserProfile | null) => void): () => void {
+      if (IS_MOCK) return () => {};
+      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_OUT' || !session) {
+          callback(null);
+        } else if (event === 'SIGNED_IN') {
+          try {
+            const profile = await apiFetch<UserProfile>('/auth/me');
+            callback(profile);
+          } catch {
+            // Không làm gián đoạn UI nếu /auth/me lỗi tạm thời
+          }
+        }
+      });
+      return () => data.subscription.unsubscribe();
     },
 
     async logout(): Promise<void> {
@@ -365,7 +492,7 @@ export const api = {
       return apiFetch<Category[]>('/categories');
     },
 
-    async create(category: Omit<Category, 'id'>): Promise<Category> {
+    async create(category: Omit<Category, 'id' | 'code'>): Promise<Category> {
       if (IS_MOCK) {
         await mockDelay();
         const currentUser = api.auth.getCurrentUser();
@@ -373,7 +500,7 @@ export const api = {
           throw new Error('Chỉ Chủ cửa hàng mới có quyền tạo danh mục.');
         }
         const categories = getStorage<Category[]>('categories', INITIAL_CATEGORIES);
-        const code = category.code || generateCode('category', categories.map((item) => item.code));
+        const code = generateCode('category', categories.map((item) => item.code));
         if (categories.some((item) => item.code === code)) {
           throw new Error(`Mã danh mục "${code}" đã tồn tại.`);
         }
@@ -650,23 +777,30 @@ export const api = {
       });
     },
 
-    // Gạch nợ hóa đơn (Chỉ Chủ - SPEC Mục 8 & 12.3)
-    async settleDebt(invoiceId: string, paymentMethod: 'cash' | 'transfer'): Promise<Invoice> {
+    // Thu nợ hóa đơn chưa thanh toán.
+    async settleDebt(
+      invoiceId: string,
+      paymentMethod: 'cash' | 'transfer',
+      amountReceived: number
+    ): Promise<Invoice> {
       if (IS_MOCK) {
         await mockDelay();
         const currentUser = api.auth.getCurrentUser();
-        if (currentUser?.role !== 'owner') {
-          throw new Error('Chỉ Chủ cửa hàng mới có quyền gạch nợ hóa đơn.');
-        }
+        if (!currentUser) throw new Error('Vui lòng đăng nhập.');
 
         const invoices = getStorage<Invoice[]>('invoices', INITIAL_INVOICES);
         const inv = invoices.find((i) => i.id === invoiceId);
         if (!inv) throw new Error('Không tìm thấy hóa đơn.');
         if (inv.status === 'paid') throw new Error('Hóa đơn này đã được thanh toán rồi.');
+        if (amountReceived < inv.total_amount) {
+          throw new Error('Số tiền thanh toán phải bằng hoặc lớn hơn số cần trả.');
+        }
 
         inv.status = 'paid';
         inv.paid_at = new Date().toISOString();
         inv.payment_method_settled = paymentMethod;
+        inv.cash_given = amountReceived;
+        inv.change_given = amountReceived - inv.total_amount;
 
         // Giảm nợ của khách hàng tương ứng
         if (inv.customer_id) {
@@ -690,7 +824,7 @@ export const api = {
 
       return apiFetch<Invoice>(`/invoices/${invoiceId}/settle`, {
         method: 'POST',
-        body: JSON.stringify({ payment_method: paymentMethod }),
+        body: JSON.stringify({ payment_method: paymentMethod, amount_received: amountReceived }),
       });
     },
 
@@ -759,6 +893,7 @@ export const api = {
     },
 
     async create(data: {
+      code?: string;
       order_date?: string;
       supplier_name?: string;
       notes?: string;
@@ -779,7 +914,7 @@ export const api = {
 
         const newPo: PurchaseOrder = {
           id: 'po-' + Date.now(),
-          code: generateCode('purchaseOrder', pos.map((order) => order.code)),
+          code: data.code || generateCode('purchaseOrder', pos.map((order) => order.code)),
           order_date: data.order_date || new Date().toISOString(),
           creator_id: currentUser.id,
           creator_name: currentUser.full_name,
@@ -799,6 +934,7 @@ export const api = {
       return apiFetch<PurchaseOrder>('/purchase-orders', {
         method: 'POST',
         body: JSON.stringify(data),
+        timeout: 50000, // Timeout 50s cho request lưu phiếu
       });
     },
 
@@ -1142,14 +1278,12 @@ export const api = {
           throw new Error(`Không tìm thấy hóa đơn gốc có mã "${data.original_invoice_code}".`);
         }
 
-        // Quy tắc: Chỉ đổi/trả trong ngày mua (cùng ngày dương lịch VN)
-        if (!isSameDayVN(originalInvoice.created_at, new Date())) {
-          throw new Error(
-            'Hệ thống chỉ cho phép đổi/trả hàng trong ngày mua. Hóa đơn này đã quá hạn đổi/trả.'
-          );
+        const invoiceAge = Date.now() - new Date(originalInvoice.created_at).getTime();
+        if (invoiceAge < 0 || invoiceAge > 24 * 60 * 60 * 1000) {
+          throw new Error('Hóa đơn đã quá thời hạn đổi/trả 24 giờ.');
         }
 
-        // Kiểm tra số lượng trả không vượt quá số lượng trên hóa đơn gốc
+        const slips = getStorage<ReturnSlip[]>('return_slips', INITIAL_RETURN_SLIPS);
         for (const item of data.items) {
           const invItem = originalInvoice.items.find(
             (ii) => ii.product_barcode === item.product_barcode
@@ -1157,9 +1291,16 @@ export const api = {
           if (!invItem) {
             throw new Error(`Sản phẩm "${item.product_name}" không nằm trong hóa đơn gốc.`);
           }
-          if (item.quantity > invItem.quantity) {
+          const alreadyReturned = slips
+            .filter((slip) =>
+              slip.original_invoice_code === originalInvoice.code && slip.status !== 'rejected'
+            )
+            .flatMap((slip) => slip.items)
+            .filter((returned) => returned.product_barcode === item.product_barcode)
+            .reduce((sum, returned) => sum + returned.quantity, 0);
+          if (item.quantity + alreadyReturned > invItem.quantity) {
             throw new Error(
-              `Số lượng trả của "${item.product_name}" (${item.quantity}) vượt quá số lượng đã mua trên hóa đơn (${invItem.quantity}).`
+              `Số lượng trả của "${item.product_name}" vượt quá số lượng còn được phép trả trên hóa đơn (${Math.max(0, invItem.quantity - alreadyReturned)}).`
             );
           }
         }
@@ -1170,7 +1311,14 @@ export const api = {
           0
         );
 
-        const slips = getStorage<ReturnSlip[]>('return_slips', INITIAL_RETURN_SLIPS);
+        const products = getStorage<Product[]>('products', INITIAL_PRODUCTS);
+        const insufficient = (data.exchange_items || []).filter((item) => {
+          const product = products.find((candidate) => candidate.barcode === item.product_barcode);
+          return !product || product.stock_quantity < item.quantity;
+        });
+        if (insufficient.length) throw new Error('Sản phẩm đổi không đủ tồn kho.');
+
+        const now = new Date().toISOString();
         const newSlip: ReturnSlip = {
           id: 'ret-' + Date.now(),
           code: generateCode('return', slips.map((slip) => slip.code)),
@@ -1178,8 +1326,9 @@ export const api = {
           slip_date: new Date().toISOString(),
           creator_id: currentUser.id,
           creator_name: currentUser.full_name,
-          status: currentUser.role === 'owner' ? 'approved' : 'pending',
+          status: 'approved',
           type: data.type,
+          reason: data.reason,
           items: data.items.map((i) => ({ ...i, total_amount: i.quantity * i.selling_price })),
           exchange_items: data.exchange_items?.map((i) => ({
             ...i,
@@ -1188,24 +1337,19 @@ export const api = {
           total_refund: returnTotal,
           difference_amount: exchangeTotal - returnTotal,
           proof_image_url: data.proof_image_url,
-          approved_by: currentUser.role === 'owner' ? currentUser.full_name : undefined,
-          approved_at: currentUser.role === 'owner' ? new Date().toISOString() : undefined,
+          approved_at: now,
         };
 
-        // Nếu Chủ duyệt ngay: cộng lại kho hàng trả, trừ kho hàng đổi
-        if (newSlip.status === 'approved') {
-          const products = getStorage<Product[]>('products', INITIAL_PRODUCTS);
-          data.items.forEach((item) => {
-            const prod = products.find((p) => p.barcode === item.product_barcode);
-            if (prod) prod.stock_quantity += item.quantity;
-          });
-          data.exchange_items?.forEach((item) => {
-            const prod = products.find((p) => p.barcode === item.product_barcode);
-            if (prod) prod.stock_quantity = Math.max(0, prod.stock_quantity - item.quantity);
-          });
-          setStorage('products', products);
-        }
+        data.items.forEach((item) => {
+          const prod = products.find((p) => p.barcode === item.product_barcode);
+          if (prod) prod.stock_quantity += item.quantity;
+        });
+        data.exchange_items?.forEach((item) => {
+          const prod = products.find((p) => p.barcode === item.product_barcode);
+          if (prod) prod.stock_quantity -= item.quantity;
+        });
 
+        setStorage('products', products);
         slips.unshift(newSlip);
         setStorage('return_slips', slips);
         logAudit('Tạo phiếu đổi/trả', 'Phiếu đổi trả', newSlip.code, `Hóa đơn gốc: ${data.original_invoice_code}`);
@@ -1213,6 +1357,118 @@ export const api = {
       }
       return apiFetch<ReturnSlip>('/return-slips', {
         method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async update(
+      id: string,
+      data: {
+        type: 'return' | 'exchange';
+        reason: string;
+        items: { product_barcode: string; quantity: number }[];
+        exchange_items?: { product_barcode: string; quantity: number }[];
+        proof_image_url?: string;
+      }
+    ): Promise<ReturnSlip> {
+      if (IS_MOCK) {
+        await mockDelay();
+        const currentUser = api.auth.getCurrentUser();
+        if (currentUser?.role !== 'owner') {
+          throw new Error('Chỉ Chủ cửa hàng mới có quyền sửa phiếu đổi/trả.');
+        }
+
+        const slips = getStorage<ReturnSlip[]>('return_slips', INITIAL_RETURN_SLIPS);
+        const slip = slips.find((item) => item.id === id);
+        if (!slip) throw new Error('Không tìm thấy phiếu đổi/trả.');
+        if (slip.status !== 'approved' && slip.status !== 'pending') {
+          throw new Error('Chỉ được sửa phiếu đổi/trả đã ghi nhận.');
+        }
+
+        const invoices = getStorage<Invoice[]>('invoices', INITIAL_INVOICES);
+        const invoice = invoices.find((item) => item.code === slip.original_invoice_code);
+        if (!invoice) throw new Error('Không tìm thấy hóa đơn gốc.');
+        const invoiceAge = Date.now() - new Date(invoice.created_at).getTime();
+        if (invoiceAge < 0 || invoiceAge > 24 * 60 * 60 * 1000) {
+          throw new Error('Hóa đơn đã quá thời hạn đổi/trả 24 giờ.');
+        }
+        const otherSlips = slips.filter((item) =>
+          item.id !== id && item.original_invoice_code === slip.original_invoice_code && item.status !== 'rejected'
+        );
+        for (const item of data.items) {
+          const purchased = invoice.items
+            .filter((invoiceItem) => invoiceItem.product_barcode === item.product_barcode)
+            .reduce((sum, invoiceItem) => sum + invoiceItem.quantity, 0);
+          const alreadyReturned = otherSlips
+            .flatMap((other) => other.items)
+            .filter((returned) => returned.product_barcode === item.product_barcode)
+            .reduce((sum, returned) => sum + returned.quantity, 0);
+          if (!purchased || item.quantity + alreadyReturned > purchased) {
+            throw new Error(`Số lượng trả của sản phẩm ${item.product_barcode} vượt quá số lượng còn được phép trả.`);
+          }
+        }
+
+        const products = getStorage<Product[]>('products', INITIAL_PRODUCTS);
+        const impacts = new Map<string, number>();
+        const addImpact = (barcode: string, quantity: number) => {
+          impacts.set(barcode, (impacts.get(barcode) || 0) + quantity);
+        };
+        if (slip.status === 'approved') {
+          slip.items.forEach((item) => addImpact(item.product_barcode, -item.quantity));
+          slip.exchange_items?.forEach((item) => addImpact(item.product_barcode, item.quantity));
+          data.items.forEach((item) => addImpact(item.product_barcode, item.quantity));
+          (data.exchange_items || []).forEach((item) => addImpact(item.product_barcode, -item.quantity));
+        }
+        for (const [barcode, delta] of impacts) {
+          const product = products.find((item) => item.barcode === barcode);
+          if (!product || product.stock_quantity + delta < 0) {
+            throw new Error(`Sản phẩm đổi ${barcode} không đủ tồn kho.`);
+          }
+        }
+
+        const returnedItems = data.items.map((item) => {
+          const invoiceItem = invoice.items.find((candidate) => candidate.product_barcode === item.product_barcode);
+          if (!invoiceItem) throw new Error(`Sản phẩm ${item.product_barcode} không nằm trong hóa đơn gốc.`);
+          return {
+            product_barcode: item.product_barcode,
+            product_name: invoiceItem.product_name,
+            quantity: item.quantity,
+            selling_price: invoiceItem.unit_price,
+            total_amount: item.quantity * invoiceItem.unit_price,
+          };
+        });
+        const exchangeItems = (data.exchange_items || []).map((item) => {
+          const product = products.find((candidate) => candidate.barcode === item.product_barcode);
+          if (!product) throw new Error(`Không tìm thấy sản phẩm đổi ${item.product_barcode}.`);
+          return {
+            product_barcode: item.product_barcode,
+            product_name: product.name,
+            quantity: item.quantity,
+            selling_price: product.selling_price,
+            total_amount: item.quantity * product.selling_price,
+          };
+        });
+        impacts.forEach((delta, barcode) => {
+          const product = products.find((item) => item.barcode === barcode);
+          if (product) product.stock_quantity += delta;
+        });
+
+        const totalRefund = returnedItems.reduce((sum, item) => sum + item.total_amount, 0);
+        const exchangeTotal = exchangeItems.reduce((sum, item) => sum + item.total_amount, 0);
+        slip.type = data.type;
+        slip.reason = data.reason;
+        slip.items = returnedItems;
+        slip.exchange_items = exchangeItems;
+        slip.total_refund = totalRefund;
+        slip.difference_amount = exchangeTotal - totalRefund;
+        slip.proof_image_url = data.proof_image_url || slip.proof_image_url;
+        setStorage('products', products);
+        setStorage('return_slips', slips);
+        logAudit('Sửa phiếu đổi/trả', 'Phiếu đổi trả', slip.code, data.reason);
+        return slip;
+      }
+      return apiFetch<ReturnSlip>(`/return-slips/${id}`, {
+        method: 'PATCH',
         body: JSON.stringify(data),
       });
     },
@@ -1302,6 +1558,59 @@ export const api = {
 
   // 10. Báo cáo & Dashboard (Chỉ Chủ)
   reports: {
+    async getRevenueReport(from: string, to: string, groupBy: 'day' | 'week' | 'month' = 'day'): Promise<{
+      from: string;
+      to: string;
+      group_by: string;
+      summary: {
+        total_revenue: number;
+        invoice_count: number;
+        payment_methods: { cash: number; transfer: number; debt: number };
+      };
+      data: {
+        period: string;
+        period_start: string;
+        period_end: string;
+        revenue: number;
+        invoice_count: number;
+        payment_methods: { cash: number; transfer: number; debt: number };
+      }[];
+    }> {
+      const f = from.includes('/') ? from.split('/').reverse().join('-') : from;
+      const t = to.includes('/') ? to.split('/').reverse().join('-') : to;
+      return apiFetch(`/reports/revenue?from=${f}&to=${t}&group_by=${groupBy}`);
+    },
+
+    async getProfitReport(from: string, to: string, groupBy: 'day' | 'week' | 'month' = 'day'): Promise<{
+      from: string;
+      to: string;
+      group_by: string;
+      summary: {
+        revenue: number;
+        cost_of_goods_sold: number;
+        returned_cost: number;
+        exchanged_cost: number;
+        disposal_cost: number;
+        expenses: number;
+        gross_profit: number;
+        net_profit: number;
+      };
+      data: {
+        period: string;
+        period_start: string;
+        period_end: string;
+        revenue: number;
+        invoice_count: number;
+        cost_of_goods_sold: number;
+        gross_profit: number;
+        net_profit: number;
+      }[];
+    }> {
+      const f = from.includes('/') ? from.split('/').reverse().join('-') : from;
+      const t = to.includes('/') ? to.split('/').reverse().join('-') : to;
+      return apiFetch(`/reports/profit?from=${f}&to=${t}&group_by=${groupBy}`);
+    },
+
     async getDailyReport(dateStr: string): Promise<{
       date: string;
       totalRevenue: number;
@@ -1356,7 +1665,8 @@ export const api = {
           invoices,
         };
       }
-      return apiFetch(`/reports/daily?date=${dateStr}`);
+      const apiDate = dateStr.includes('/') ? dateStr.split('/').reverse().join('-') : dateStr;
+      return apiFetch(`/reports/daily?date=${apiDate}`);
     },
 
     async getMonthlyReport(year: number, month: number): Promise<{
@@ -1498,6 +1808,41 @@ export const api = {
           topSellingProducts?: { barcode: string; name: string; quantity: number; total_amount: number }[];
         }
       >('/reports/dashboard');
+    },
+
+    async importExpenses(file: File, month?: string): Promise<{
+      success: boolean;
+      message: string;
+      imported_count: number;
+      total_amount: number;
+      month?: string;
+    }> {
+      if (IS_MOCK) {
+        await mockDelay();
+        const currentUser = api.auth.getCurrentUser();
+        if (currentUser?.role !== 'owner') {
+          throw new Error('Chỉ Chủ cửa hàng mới có quyền nhập chi phí.');
+        }
+        if (!file.name.toLowerCase().endsWith('.xlsx')) {
+          throw new Error('Chỉ chấp nhận file định dạng Excel (.xlsx).');
+        }
+        return {
+          success: true,
+          message: 'Nhập dữ liệu chi phí từ Excel thành công!',
+          imported_count: 4,
+          total_amount: 7000000,
+          month,
+        };
+      }
+      const formData = new FormData();
+      formData.append('file', file);
+      if (month) {
+        formData.append('month', month);
+      }
+      return apiFetch('/reports/expenses/import', {
+        method: 'POST',
+        body: formData,
+      });
     },
   },
 

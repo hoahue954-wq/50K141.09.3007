@@ -76,16 +76,9 @@ export const catalogService = {
     if (await categoryRepository.findByName(input.name)) {
       throw new AppError(409, `Tên danh mục "${input.name}" đã tồn tại.`, 'CATEGORY_NAME_EXISTS');
     }
-    let code = input.code;
-    if (code) {
-      if (await categoryRepository.findByCode(code)) {
-        throw new AppError(409, `Mã danh mục "${code}" đã tồn tại.`, 'CATEGORY_CODE_EXISTS');
-      }
-    } else {
-      code = await generateCode('category', async (candidate) =>
-        Boolean(await categoryRepository.findByCode(candidate)),
-      );
-    }
+    const code = await generateCode('category', async (candidate) =>
+      Boolean(await categoryRepository.findByCode(candidate)),
+    );
 
     const category = await categoryRepository.create({
       code,
@@ -102,12 +95,7 @@ export const catalogService = {
     if (input.name && (await categoryRepository.findByName(input.name, id))) {
       throw new AppError(409, `Tên danh mục "${input.name}" đã tồn tại.`, 'CATEGORY_NAME_EXISTS');
     }
-    if (input.code && (await categoryRepository.findByCode(input.code, id))) {
-      throw new AppError(409, `Mã danh mục "${input.code}" đã tồn tại.`, 'CATEGORY_CODE_EXISTS');
-    }
-
     const category = await categoryRepository.update(id, {
-      ...(input.code === undefined ? {} : { code: input.code }),
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.description === undefined ? {} : { description: input.description || null }),
     });

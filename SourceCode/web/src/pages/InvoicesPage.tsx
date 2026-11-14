@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import { Invoice } from '../types';
@@ -17,6 +17,7 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
+  Delete,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -27,6 +28,209 @@ import { EmptyState } from '../components/common/EmptyState';
 import { ErrorState } from '../components/common/ErrorState';
 
 type PageMode = 'list' | 'detail';
+
+interface InvoiceSettlementModalProps {
+  invoice: Invoice | null;
+  isPending: boolean;
+  onClose: () => void;
+  onSubmit: (method: 'cash' | 'transfer', amountReceived: number) => void;
+}
+
+const InvoiceSettlementModal: React.FC<InvoiceSettlementModalProps> = ({
+  invoice,
+  isPending,
+  onClose,
+  onSubmit,
+}) => {
+  const [method, setMethod] = useState<'cash' | 'transfer'>('cash');
+  const [receivedInput, setReceivedInput] = useState('');
+  const [hasConfirmed, setHasConfirmed] = useState(false);
+  const [showInvalidAmount, setShowInvalidAmount] = useState(false);
+
+  useEffect(() => {
+    if (!invoice) return;
+    setMethod('cash');
+    setReceivedInput('');
+    setHasConfirmed(false);
+    setShowInvalidAmount(false);
+  }, [invoice?.id, invoice?.total_amount]);
+
+  if (!invoice) return null;
+
+  const amountReceived = Number(receivedInput) || 0;
+  const amountIsValid = amountReceived >= invoice.total_amount;
+  const setDigit = (digit: string) => {
+    setReceivedInput((current) => `${current}${digit}`.replace(/^0+(?=\d)/, ''));
+    setHasConfirmed(false);
+    setShowInvalidAmount(false);
+  };
+  const confirmAmount = () => {
+    if (!amountIsValid) {
+      setShowInvalidAmount(true);
+      setHasConfirmed(false);
+      return;
+    }
+    setShowInvalidAmount(false);
+    setHasConfirmed(true);
+  };
+
+  return (
+    <Modal isOpen onClose={onClose} title="Cập nhật trạng thái hóa đơn" maxWidth="2xl">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <section className="rounded-xl border border-slate-200 p-4 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs text-slate-500 uppercase">Hóa đơn bán hàng</p>
+              <p className="text-xl font-bold text-[var(--color-primary)] mt-1">{invoice.code}</p>
+            </div>
+            <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">
+              Chưa thanh toán
+            </span>
+          </div>
+          <div className="rounded-lg bg-slate-50 p-3 text-sm">
+            <p className="font-semibold text-slate-800">{invoice.customer_name || 'Khách lẻ'}</p>
+            <p className="text-xs text-slate-500 mt-1">Ngày lập: {formatDateTime(invoice.created_at)}</p>
+          </div>
+          <div className="space-y-2 max-h-52 overflow-y-auto">
+            {invoice.items.map((item, index) => (
+              <div key={`${item.product_barcode}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 pb-2 text-xs">
+                <span className="text-slate-700">{item.product_name} · {item.quantity} {item.unit}</span>
+                <span className="shrink-0 font-semibold text-slate-800">{formatVND(item.quantity * item.unit_price)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="bg-highlight rounded-lg px-4 py-3 flex items-center justify-between">
+            <span className="text-sm font-semibold">Tổng tiền</span>
+            <span className="text-xl font-bold text-slate-900">{formatVND(invoice.total_amount)}</span>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-200 p-4 space-y-4">
+          <h3 className="font-semibold text-slate-800">Phương thức thanh toán</h3>
+          <div className="grid grid-cols-2 gap-2">
+            {(['cash', 'transfer'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  setMethod(value);
+                  if (value === 'transfer') setReceivedInput(String(invoice.total_amount));
+                  setHasConfirmed(false);
+                  setShowInvalidAmount(false);
+                }}
+                className={`min-h-14 py-2 px-3 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 transition-colors ${
+                  method === value
+                    ? 'bg-primary-soft border-[var(--color-primary)] text-[var(--color-primary)]'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {value === 'cash' ? <Banknote className="w-4 h-4" /> : <QrCode className="w-4 h-4" />}
+                {value === 'cash' ? 'Tiền mặt' : 'Mã QR'}
+              </button>
+            ))}
+          </div>
+          {method === 'cash' ? (
+            <div>
+              <label className={`block rounded-lg border p-3 text-xs ${showInvalidAmount ? 'border-red-500 bg-red-50 text-red-600' : 'border-slate-200 bg-white text-slate-600'}`}>
+                Tiền khách đưa *
+                <span className="mt-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={receivedInput ? Number(receivedInput).toLocaleString('vi-VN') : ''}
+                    onChange={(event) => {
+                      setReceivedInput(event.target.value.replace(/\D/g, ''));
+                      setHasConfirmed(false);
+                      setShowInvalidAmount(false);
+                    }}
+                    className={`w-full bg-transparent text-2xl font-bold outline-none ${showInvalidAmount ? 'text-red-600' : 'text-slate-800'}`}
+                    aria-label="Tiền khách đưa"
+                  />
+                  <span>đ</span>
+                </span>
+              </label>
+              {showInvalidAmount && (
+                <p className="mt-1 flex items-center gap-1 text-xs text-red-600">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Số tiền không hợp lệ!
+                </p>
+              )}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((digit) => (
+                  <button
+                    key={digit}
+                    type="button"
+                    onClick={() => setDigit(digit)}
+                    className="h-11 rounded-lg border border-slate-200 bg-white text-lg font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    {digit}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReceivedInput((current) => current.slice(0, -1));
+                    setHasConfirmed(false);
+                    setShowInvalidAmount(false);
+                  }}
+                  aria-label="Xóa chữ số cuối"
+                  className="h-11 rounded-lg border border-slate-200 bg-white flex items-center justify-center text-slate-700 hover:bg-slate-50"
+                >
+                  <Delete className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmAmount}
+                  className="h-11 rounded-lg bg-[var(--color-primary)] text-white font-semibold hover:bg-[var(--color-primary-hover)]"
+                >
+                  Xác nhận
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+              Số tiền cần thanh toán
+              <p className="mt-1 text-right text-xl font-bold text-slate-900">{formatVND(invoice.total_amount)}</p>
+              <button
+                type="button"
+                onClick={confirmAmount}
+                className="mt-3 w-full rounded-lg bg-[var(--color-primary)] py-2 text-white font-semibold"
+              >
+                Xác nhận
+              </button>
+            </div>
+          )}
+          <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+            Khách cần trả
+            <p className="text-right text-xl font-bold text-slate-900 mt-1">{formatVND(invoice.total_amount)}</p>
+          </div>
+          <div className={`rounded-lg p-3 text-xs ${hasConfirmed ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+            Tiền thừa
+            <p className="text-right text-xl font-bold mt-1">
+              {hasConfirmed ? formatVND(Math.max(0, amountReceived - invoice.total_amount)) : '—'}
+            </p>
+            {!hasConfirmed && <p>Chưa thể xác nhận thanh toán</p>}
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium rounded-lg text-sm"
+            >
+              Hủy
+            </button>
+            <button
+              onClick={() => onSubmit(method, amountReceived)}
+              disabled={!hasConfirmed || isPending}
+              className="flex-1 py-2.5 bg-[var(--color-success)] hover:bg-[var(--color-success-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
+            >
+              {isPending ? 'Đang xử lý...' : 'Thanh toán hoàn tất'}
+            </button>
+          </div>
+        </section>
+      </div>
+    </Modal>
+  );
+};
 
 const paymentLabel = (m: string) =>
   m === 'cash' ? 'Tiền mặt' : m === 'transfer' ? 'Chuyển khoản' : 'Ghi nợ';
@@ -43,7 +247,6 @@ export const InvoicesPage: React.FC = () => {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [deleteInvoiceId, setDeleteInvoiceId] = useState<string | null>(null);
   const [settleInvoice, setSettleInvoice] = useState<Invoice | null>(null);
-  const [settleMethod, setSettleMethod] = useState<'cash' | 'transfer'>('cash');
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 10;
 
@@ -69,8 +272,8 @@ export const InvoicesPage: React.FC = () => {
   });
 
   const settleMutation = useMutation({
-    mutationFn: ({ id, method }: { id: string; method: 'cash' | 'transfer' }) =>
-      api.invoices.settleDebt(id, method),
+    mutationFn: ({ id, method, amountReceived }: { id: string; method: 'cash' | 'transfer'; amountReceived: number }) =>
+      api.invoices.settleDebt(id, method, amountReceived),
     onSuccess: (inv) => {
       showSuccess(`Đã gạch nợ hóa đơn ${inv.code} thành công!`);
       setSettleInvoice(null);
@@ -246,13 +449,13 @@ export const InvoicesPage: React.FC = () => {
                   In hóa đơn
                 </button>
 
-                {isOwner && !isPaid && (
+                {!isPaid && (
                   <button
                     onClick={() => setSettleInvoice(selectedInvoice)}
                     className="w-full inline-flex items-center justify-center gap-2 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] text-white font-semibold rounded-xl text-sm"
                   >
                     <Edit2 className="w-4 h-4" />
-                    Cập nhật thanh toán
+                    Sửa
                   </button>
                 )}
 
@@ -270,80 +473,16 @@ export const InvoicesPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Modal gạch nợ */}
-        <Modal isOpen={!!settleInvoice} onClose={() => setSettleInvoice(null)} title="Cập nhật trạng thái hóa đơn" maxWidth="2xl">
-          {settleInvoice && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <section className="rounded-xl border border-slate-200 p-4 space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs text-slate-500 uppercase">Hóa đơn bán hàng</p>
-                    <p className="text-xl font-bold text-[var(--color-primary)] mt-1">{settleInvoice.code}</p>
-                  </div>
-                  <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">
-                    Chưa thanh toán
-                  </span>
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3 text-sm">
-                  <p className="font-semibold text-slate-800">{settleInvoice.customer_name || 'Khách lẻ'}</p>
-                  <p className="text-xs text-slate-500 mt-1">Ngày lập: {formatDateTime(settleInvoice.created_at)}</p>
-                </div>
-                <div className="space-y-2 max-h-52 overflow-y-auto">
-                  {settleInvoice.items.map((item, index) => (
-                    <div key={`${item.product_barcode}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 pb-2 text-xs">
-                      <span className="text-slate-700">{item.product_name} · {item.quantity} {item.unit}</span>
-                      <span className="shrink-0 font-semibold text-slate-800">{formatVND(item.quantity * item.unit_price)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="bg-highlight rounded-lg px-4 py-3 flex items-center justify-between">
-                  <span className="text-sm font-semibold">Tổng tiền</span>
-                  <span className="text-xl font-bold text-slate-900">{formatVND(settleInvoice.total_amount)}</span>
-                </div>
-              </section>
-
-              <section className="rounded-xl border border-slate-200 p-4 space-y-4">
-                <h3 className="font-semibold text-slate-800">Phương thức thanh toán</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['cash', 'transfer'] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setSettleMethod(m)}
-                      className={`min-h-14 py-2 px-3 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 transition-colors ${
-                        settleMethod === m
-                          ? 'bg-primary-soft border-[var(--color-primary)] text-[var(--color-primary)]'
-                          : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {m === 'cash' ? <Banknote className="w-4 h-4" /> : <QrCode className="w-4 h-4" />}
-                      {m === 'cash' ? 'Tiền mặt' : 'Mã QR'}
-                    </button>
-                  ))}
-                </div>
-                <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-                  Số tiền cần thanh toán
-                  <p className="text-right text-xl font-bold text-slate-900 mt-1">{formatVND(settleInvoice.total_amount)}</p>
-                </div>
-                <div className="flex gap-3 pt-2">
-                  <button
-                    onClick={() => setSettleInvoice(null)}
-                    className="flex-1 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium rounded-lg text-sm"
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    onClick={() => settleMutation.mutate({ id: settleInvoice.id, method: settleMethod })}
-                    disabled={settleMutation.isPending}
-                    className="flex-1 py-2.5 bg-[var(--color-success)] hover:bg-[var(--color-success-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
-                  >
-                    {settleMutation.isPending ? 'Đang xử lý...' : 'Xác nhận thanh toán'}
-                  </button>
-                </div>
-              </section>
-            </div>
-          )}
-        </Modal>
+        <InvoiceSettlementModal
+          invoice={settleInvoice}
+          isPending={settleMutation.isPending}
+          onClose={() => setSettleInvoice(null)}
+          onSubmit={(method, amountReceived) => settleMutation.mutate({
+            id: settleInvoice!.id,
+            method,
+            amountReceived,
+          })}
+        />
 
         {/* Confirm xóa */}
         <ConfirmModal
@@ -493,12 +632,12 @@ export const InvoicesPage: React.FC = () => {
                                   <Trash2 className="w-3.5 h-3.5" /> Xóa
                                 </button>
                               )}
-                              {isOwner && !isPaid && (
+                              {!isPaid && (
                                 <button
                                   onClick={() => { setSettleInvoice(inv); }}
                                   className="inline-flex items-center gap-1 text-xs text-[var(--color-primary)] hover:underline"
                                 >
-                                  <Edit2 className="w-3.5 h-3.5" /> Gạch nợ
+                                  <Edit2 className="w-3.5 h-3.5" /> Sửa
                                 </button>
                               )}
                             </div>
@@ -545,78 +684,16 @@ export const InvoicesPage: React.FC = () => {
         </>
       )}
 
-      {/* Modal gạch nợ (từ danh sách) */}
-      <Modal isOpen={!!settleInvoice && mode === 'list'} onClose={() => setSettleInvoice(null)} title="Cập nhật trạng thái hóa đơn" maxWidth="2xl">
-        {settleInvoice && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <section className="rounded-xl border border-slate-200 p-4 space-y-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs text-slate-500 uppercase">Hóa đơn bán hàng</p>
-                  <p className="text-xl font-bold text-[var(--color-primary)] mt-1">{settleInvoice.code}</p>
-                </div>
-                <span className="rounded-full bg-primary-soft px-3 py-1 text-xs font-medium text-primary">Chưa thanh toán</span>
-              </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-sm">
-                <p className="font-semibold text-slate-800">{settleInvoice.customer_name || 'Khách lẻ'}</p>
-                <p className="text-xs text-slate-500 mt-1">Ngày lập: {formatDateTime(settleInvoice.created_at)}</p>
-              </div>
-              <div className="space-y-2 max-h-52 overflow-y-auto">
-                {settleInvoice.items.map((item, index) => (
-                  <div key={`${item.product_barcode}-${index}`} className="flex justify-between gap-3 border-b border-slate-100 pb-2 text-xs">
-                    <span className="text-slate-700">{item.product_name} · {item.quantity} {item.unit}</span>
-                    <span className="shrink-0 font-semibold text-slate-800">{formatVND(item.quantity * item.unit_price)}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="bg-highlight rounded-lg px-4 py-3 flex items-center justify-between">
-                <span className="text-sm font-semibold">Tổng tiền</span>
-                <span className="text-xl font-bold text-slate-900">{formatVND(settleInvoice.total_amount)}</span>
-              </div>
-            </section>
-
-            <section className="rounded-xl border border-slate-200 p-4 space-y-4">
-              <h3 className="font-semibold text-slate-800">Phương thức thanh toán</h3>
-              <div className="grid grid-cols-2 gap-2">
-                {(['cash', 'transfer'] as const).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setSettleMethod(m)}
-                    className={`min-h-14 py-2 px-3 rounded-lg text-sm font-medium border flex items-center justify-center gap-1.5 transition-colors ${
-                      settleMethod === m
-                        ? 'bg-primary-soft border-[var(--color-primary)] text-[var(--color-primary)]'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    {m === 'cash' ? <Banknote className="w-4 h-4" /> : <QrCode className="w-4 h-4" />}
-                    {m === 'cash' ? 'Tiền mặt' : 'Mã QR'}
-                  </button>
-                ))}
-              </div>
-              <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-                Số tiền cần thanh toán
-                <p className="text-right text-xl font-bold text-slate-900 mt-1">{formatVND(settleInvoice.total_amount)}</p>
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => setSettleInvoice(null)}
-                  className="flex-1 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-medium rounded-lg text-sm"
-                >
-                  Hủy
-                </button>
-                <button
-                  onClick={() => settleMutation.mutate({ id: settleInvoice.id, method: settleMethod })}
-                  disabled={settleMutation.isPending}
-                  className="flex-1 py-2.5 bg-[var(--color-success)] hover:bg-[var(--color-success-hover)] text-white font-medium rounded-lg text-sm shadow-sm disabled:opacity-70"
-                >
-                  {settleMutation.isPending ? 'Đang xử lý...' : 'Xác nhận thanh toán'}
-                </button>
-              </div>
-            </section>
-          </div>
-        )}
-      </Modal>
+      {mode === 'list' && (
+        <InvoiceSettlementModal
+          invoice={settleInvoice}
+          isPending={settleMutation.isPending}
+          onClose={() => setSettleInvoice(null)}
+          onSubmit={(method, amountReceived) => {
+            if (settleInvoice) settleMutation.mutate({ id: settleInvoice.id, method, amountReceived });
+          }}
+        />
+      )}
 
       {/* Confirm xóa */}
       <ConfirmModal
