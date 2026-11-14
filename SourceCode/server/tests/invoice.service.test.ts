@@ -65,6 +65,8 @@ const originalRepositoryMethods = {
   findCustomer: invoiceRepository.findCustomer,
   createSale: invoiceRepository.createSale,
   codeExists: invoiceRepository.codeExists,
+  staffDayMetrics: invoiceRepository.staffDayMetrics,
+  staffRecentInvoices: invoiceRepository.staffRecentInvoices,
 };
 
 afterEach(() => {
@@ -294,4 +296,75 @@ test('STAFF cannot pass the OWNER invoice-delete authorization guard', () => {
   assert.ok(receivedError instanceof AppError);
   assert.equal(receivedError.statusCode, 403);
   assert.equal(receivedError.code, 'FORBIDDEN');
+});
+
+test('dashboard for STAFF returns personal shift and latest invoices without store revenue or cost price', async () => {
+  const staffProfile: AuthenticatedProfile = {
+    id: 'b6adf083-c5a4-4d7b-8bc8-173e27c34e1c',
+    username: 'staff',
+    fullName: 'Nhân viên A',
+    status: ProfileStatus.ACTIVE,
+    createdAt: new Date(),
+    role: { id: '7340d1db-6392-4e16-9718-a2d5a82f5bc2', code: RoleCode.STAFF, name: 'Nhân viên' },
+  };
+
+  const invoice = makeInvoice({
+    code: 'HD1038',
+    createdById: staffProfile.id,
+    paymentMethod: 'CASH',
+    totalAmount: new Prisma.Decimal(160000),
+    amountReceived: new Prisma.Decimal(160000),
+    lines: [
+      {
+        productId: product.id,
+        productBarcode: product.barcode,
+        productName: product.name,
+        unit: product.unit,
+        quantity: 2,
+        unitPrice: new Prisma.Decimal(80000),
+        costPrice: new Prisma.Decimal(50000),
+      },
+    ],
+  });
+
+  invoiceRepository.staffDayMetrics = async () => ({
+    aggregate: {
+      _sum: { totalAmount: new Prisma.Decimal(3840000) },
+      _min: { createdAt: new Date() },
+      _max: { createdAt: new Date() },
+    },
+    count: 24,
+  });
+
+  invoiceRepository.staffRecentInvoices = async (_userId, limit) => {
+    assert.equal(limit, 25);
+    return [invoice];
+  };
+
+  const result = await invoiceService.dashboard(staffProfile);
+
+  assert.ok('shift' in result && result.shift);
+  assert.ok('latestInvoices' in result && result.latestInvoices);
+
+  // Khớp số liệu thẻ
+  assert.equal(result.shift.sales_amount, 3840000);
+  assert.equal(result.shift.invoice_count, 24);
+
+  // Bảo mật: Không rò rỉ số liệu toàn cửa hàng
+  assert.equal('todayRevenue' in result, false);
+  assert.equal('lowStockCount' in result, false);
+  assert.equal('topSellingProducts' in result, false);
+
+  // Danh sách hóa đơn gần đây của STAFF
+  assert.ok(Array.isArray(result.latestInvoices));
+  assert.equal(result.latestInvoices.length, 1);
+  const firstInvoice = result.latestInvoices[0];
+  assert.ok(firstInvoice);
+  assert.equal(firstInvoice.code, 'HD1038');
+  assert.equal(firstInvoice.seller_id, staffProfile.id);
+
+  // Bảo mật giá vốn: items không được chứa cost_price
+  for (const item of firstInvoice.items) {
+    assert.equal('cost_price' in item, false);
+  }
 });

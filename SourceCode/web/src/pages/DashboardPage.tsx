@@ -33,11 +33,13 @@ export const DashboardPage: React.FC = () => {
   const { data: invoices = [] } = useQuery({
     queryKey: ['invoices'],
     queryFn: () => api.invoices.list(),
+    enabled: isOwner,
   });
 
   const { data: products = [] } = useQuery({
     queryKey: ['products'],
     queryFn: () => api.products.list(),
+    enabled: isOwner,
   });
 
   if (isStatsLoading) {
@@ -59,11 +61,14 @@ export const DashboardPage: React.FC = () => {
   const isStaffDashboard = stats !== undefined && 'shift' in stats;
   const staffShift = isStaffDashboard ? stats.shift : undefined;
   const ownerStats = stats && 'todayRevenue' in stats ? stats : undefined;
-  const visibleInvoices = isOwner
-    ? invoices
-    : invoices.filter((invoice) => invoice.seller_id === user?.id);
 
-  // Danh sách hóa đơn phân trang (Figma)
+  // Với STAFF: Tắt hẳn api.invoices.list(), chỉ dùng stats.latestInvoices (tối đa 25 hóa đơn do chính mình lập, bảo mật tuyệt đối)
+  // Với OWNER: ưu tiên stats.latestInvoices hoặc fallback sang invoices
+  const visibleInvoices = isStaffDashboard
+    ? (stats?.latestInvoices || [])
+    : (ownerStats?.latestInvoices || invoices);
+
+  // Danh sách hóa đơn phân trang (Figma: 5 trang x 5 dòng)
   const pageSize = 5;
   const totalPages = Math.max(1, Math.ceil(visibleInvoices.length / pageSize));
   const paginatedInvoices = visibleInvoices.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -164,10 +169,12 @@ export const DashboardPage: React.FC = () => {
                   <td className="py-3.5 px-6 text-slate-600">
                     <p className="font-medium">{formatDate(inv.created_at)}</p>
                     <p className="text-[11px] text-slate-400">
-                      {new Date(inv.created_at).toLocaleTimeString('vi-VN', {
+                      {new Intl.DateTimeFormat('vi-VN', {
+                        timeZone: 'Asia/Ho_Chi_Minh',
                         hour: '2-digit',
                         minute: '2-digit',
-                      })}
+                        hour12: false,
+                      }).format(new Date(inv.created_at))}
                     </p>
                   </td>
                   <td className="py-3.5 px-6 font-medium text-slate-800">

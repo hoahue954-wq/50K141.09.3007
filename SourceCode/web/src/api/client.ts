@@ -1742,14 +1742,16 @@ export const api = {
           invoice_count: number;
           sales_amount: number;
         };
+        latestInvoices?: Invoice[];
       }
       | {
-      todayRevenue: number;
-      todayCash: number;
-      todayTransfer: number;
-      todayDebt: number;
-      lowStockCount: number;
+        todayRevenue: number;
+        todayCash: number;
+        todayTransfer: number;
+        todayDebt: number;
+        lowStockCount: number;
         todayInvoiceCount?: number;
+        latestInvoices?: Invoice[];
         topSellingProducts?: { barcode: string; name: string; quantity: number; total_amount: number }[];
       }
     > {
@@ -1758,10 +1760,13 @@ export const api = {
         const todayStr = formatDate(new Date());
         const currentUser = api.auth.getCurrentUser();
         if (currentUser?.role === 'staff') {
-          const staffInvoices = (await api.invoices.list()).filter(
-            (invoice) => invoice.seller_id === currentUser.id && isSameDayVN(invoice.created_at, new Date())
+          const allStaffInvoices = (await api.invoices.list()).filter(
+            (invoice) => invoice.seller_id === currentUser.id && !invoice.is_deleted
           );
-          const saleTimes = staffInvoices
+          const staffPaidTodayInvoices = allStaffInvoices.filter(
+            (invoice) => isSameDayVN(invoice.created_at, new Date()) && invoice.status === 'paid'
+          );
+          const saleTimes = staffPaidTodayInvoices
             .map((invoice) => new Date(invoice.created_at).getTime())
             .sort((a, b) => a - b);
           return {
@@ -1769,9 +1774,10 @@ export const api = {
             shift: {
               first_sale_at: saleTimes.length ? new Date(saleTimes[0]!).toISOString() : null,
               last_sale_at: saleTimes.length ? new Date(saleTimes[saleTimes.length - 1]!).toISOString() : null,
-              invoice_count: staffInvoices.length,
-              sales_amount: staffInvoices.reduce((total, invoice) => total + invoice.total_amount, 0),
+              invoice_count: staffPaidTodayInvoices.length,
+              sales_amount: staffPaidTodayInvoices.reduce((total, invoice) => total + invoice.total_amount, 0),
             },
+            latestInvoices: allStaffInvoices.slice(0, 25),
           };
         }
 
@@ -1786,6 +1792,7 @@ export const api = {
           todayDebt: daily.debtAmount,
           lowStockCount: lowStockProducts.length + outOfStockProducts.length,
           todayInvoiceCount: invoices.length,
+          latestInvoices: invoices.slice(0, 25),
         };
       }
       return apiFetch<
@@ -1797,6 +1804,7 @@ export const api = {
             invoice_count: number;
             sales_amount: number;
           };
+          latestInvoices?: Invoice[];
         }
         | {
           todayRevenue: number;
@@ -1805,6 +1813,7 @@ export const api = {
           todayDebt: number;
           lowStockCount: number;
           todayInvoiceCount?: number;
+          latestInvoices?: Invoice[];
           topSellingProducts?: { barcode: string; name: string; quantity: number; total_amount: number }[];
         }
       >('/reports/dashboard');

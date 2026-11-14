@@ -230,7 +230,17 @@ export const invoiceService = {
     const { start, end } = getHcmDateRange(today);
 
     if (profile.role.code === 'STAFF') {
-      const { aggregate, count } = await invoiceRepository.staffDayMetrics(profile.id, start, end);
+      // Ghi chú nghiệp vụ:
+      // - "Doanh thu của bạn hôm nay" và "Hóa đơn đã bán" chỉ tính hóa đơn ĐÃ THANH TOÁN (status: 'PAID')
+      //   do chính nhân viên này lập trong ngày (UTC+7), đúng định nghĩa doanh thu kế toán.
+      // - Các hóa đơn "Chưa thanh toán" vẫn hiển thị trong bảng "Hóa đơn gần đây của bạn" (với nhãn đỏ)
+      //   nhưng KHÔNG tính vào doanh thu hôm nay.
+      // - Giới hạn latestInvoices cho STAFF ở 25 hóa đơn mới nhất (5 trang x 5 dòng, khớp Figma),
+      //   sắp xếp createdAt giảm dần, loại hóa đơn đã xóa mềm (isDeleted: false).
+      const [{ aggregate, count }, staffInvoices] = await Promise.all([
+        invoiceRepository.staffDayMetrics(profile.id, start, end),
+        invoiceRepository.staffRecentInvoices(profile.id, 25),
+      ]);
       return {
         date: today,
         shift: {
@@ -239,6 +249,7 @@ export const invoiceService = {
           invoice_count: count,
           sales_amount: Number(aggregate._sum.totalAmount ?? 0),
         },
+        latestInvoices: staffInvoices.map((invoice) => invoiceDto(invoice, false)),
       };
     }
 
